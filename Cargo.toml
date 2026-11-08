@@ -11,7 +11,6 @@ rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 slint = "1"
 rfd = "0.15"
 trash = "5"
-ntfs-reader = "0.6.0"
 notify = "8"
 flate2 = "1"
 ureq = { version = "2", features = ["json"] }
@@ -24,6 +23,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 tray-icon = { version = "0.19", default-features = false }
 winreg = "0.52"
+ntfs-reader = "0.6.0"
 windows-service = "0.8"
 
 [build-dependencies]
