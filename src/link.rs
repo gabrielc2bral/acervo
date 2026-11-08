@@ -43,6 +43,21 @@ impl ServiceLink {
     }
 
     pub fn open(catalog_path: &Path) -> Result<ServiceLink> {
+        // Duas aberturas ao mesmo tempo (app e serviço) podem esbarrar na criação do banco e na
+        // troca para WAL, que não esperam pelo tempo de espera normal: tenta de novo.
+        let mut attempt = 0;
+        loop {
+            match Self::open_once(catalog_path) {
+                Err(error) if attempt < 20 && error.to_string().contains("locked") => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn open_once(catalog_path: &Path) -> Result<ServiceLink> {
         let path = Self::path_for(catalog_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
