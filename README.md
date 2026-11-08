@@ -1,0 +1,84 @@
+<img src="assets/acervo-256.png" alt="Ícone do Acervo: três disquetes empilhados" width="96" align="right">
+
+# Acervo
+
+Catálogo de arquivos para quem guarda coisa demais em HD demais.
+
+Você aponta o Acervo para um HD ou uma pasta, ele lê nomes, tamanhos e datas e guarda tudo num banco SQLite local. Depois dá para buscar, filtrar e ver miniaturas mesmo com o HD na gaveta.
+
+Comecei por causa dos meus próprios HDs: jogos, instaladores, repacks, fotos, vídeos e livros espalhados em vários discos, e eu nunca lembrava onde estava cada coisa. É um programa de Windows, escrito em Rust, com interface em [Slint](https://slint.dev).
+
+## Instalar
+
+Baixe o `Acervo-Setup-X.Y.Z.exe` na página de [Releases](../../releases) e execute. O instalador deixa escolher a pasta, instala o serviço do Windows (obrigatório, veja abaixo), cria os atalhos e aparece em "Aplicativos e recursos" para desinstalar. O Windows pede permissão de administrador uma vez.
+
+O instalador não é assinado, então o SmartScreen pode avisar na primeira execução ("Mais informações" > "Executar assim mesmo"). Cada release traz o SHA-256 do instalador para conferir.
+
+Requisitos: Windows 10 ou 11, 64 bits. Para o Cofre, o [VeraCrypt](https://veracrypt.fr) instalado.
+
+## O que ele faz
+
+**Catálogo que funciona offline.** O catálogo guarda nome, pasta, tamanho, data e tipo de cada arquivo (não lê o conteúdo). Fontes desconectadas aparecem como offline, mas continuam na busca.
+
+**Busca rápida.** Os nomes ficam num índice em memória, então a busca não passa pelo banco. No meu catálogo, com 1,26 milhão de arquivos, uma busca leva de 1 a 9 ms. Aceita várias palavras (todas precisam aparecer), filtros por tipo, fonte e tamanho, ordenação, e a lista é paginada de 100 em 100. O índice é salvo em disco para o programa abrir já pronto.
+
+**Varredura.** Em HD NTFS inteiro ele lê a tabela de arquivos (MFT) direto do disco, o que é bem mais rápido que percorrer pasta por pasta, mas exige administrador. Em pastas e em discos que não são NTFS, percorre as pastas normalmente. Arquivos e pastas do sistema (Windows, Program Files, AppData...) e arquivos ocultos ficam de fora.
+
+**Catálogo sempre atualizado.** O Acervo observa as fontes conectadas e acerta o catálogo quando algo é criado, apagado ou renomeado. O serviço do Windows faz o mesmo pelo diário USN do NTFS, inclusive com o programa fechado. Mesmo assim, a Biblioteca confere no disco o que está mostrando.
+
+**Jogos.** Os jogos da Steam são lidos dos arquivos da própria Steam (sem login), com as capas que ela já guardou no PC. Os arquivos dentro de `steamapps` ficam separados do resto. Instaladores e pastas de repack (FitGirl e parecidos) têm abas próprias.
+
+**Miniaturas.** Usam o cache de miniaturas do Windows e ficam guardadas no próprio banco, de 2 a 4 KB cada, então aparecem com o HD desconectado. O botão "Gerar miniaturas" pede ao Windows as que faltam, só para arquivos que podem ter uma (foto, vídeo, PDF, ícone de programa).
+
+**Duplicados.** Agrupa arquivos de mesmo nome e tamanho (a partir de 1 MB). Antes de apagar uma cópia, confere que o arquivo ainda existe e compara o começo, o meio e o fim com a cópia que fica. Apagar manda para a Lixeira do Windows.
+
+**Cofre.** O catálogo de itens privados fica dentro de um volume do VeraCrypt: sem o volume montado, nada dele existe no PC. O Acervo chama o VeraCrypt, que pede a senha na janela dele. O programa nunca vê a senha. O Cofre bloqueia sozinho depois de um tempo parado.
+
+**Backup.** Em Configurações, "Fazer backup" gera um único arquivo `.acervo-backup` com fontes, arquivos catalogados, miniaturas e configurações. É para guardar antes de formatar o PC. Depois de reinstalar, "Restaurar backup" traz tudo de volta (e guarda antes uma cópia do catálogo que estava lá).
+
+## O serviço do Windows
+
+A leitura da MFT e do diário USN precisa de administrador. Para o programa não pedir permissão a cada varredura, o instalador registra um serviço (`AcervoService`, conta do sistema) que faz esse trabalho e conversa com o programa por uma tabela no próprio catálogo. Ele só lê nomes e tamanhos e grava no seu catálogo.
+
+Em Configurações dá para escolher: usar o serviço, perguntar a cada vez (permissão do Windows) ou nunca usar administrador (varredura por pastas, mais lenta).
+
+## Compilar
+
+Precisa do Rust estável (toolchain MSVC) e das Build Tools do Visual Studio com o Windows SDK.
+
+```
+cargo test
+cargo build --release
+```
+
+Para gerar o instalador (compila tudo otimizado, embute os programas e escreve `dist\Acervo-Setup-X.Y.Z.exe`):
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
+```
+
+Os executáveis:
+
+| Programa | Para quê |
+| --- | --- |
+| `acervo` | a janela |
+| `acervo-cli` | linha de comando: varrer, buscar, estatísticas, diagnóstico |
+| `acervo-service` | o serviço do Windows (instalar, remover, rodar) |
+| `acervo-setup` | o instalador e o desinstalador |
+
+Onde está cada coisa em `src/`: `db.rs` (catálogo SQLite), `scan.rs` e `fast.rs` (varredura por pastas e pela MFT), `index.rs` (índice em memória), `watch.rs` (acompanha as pastas), `service.rs` (serviço e diário USN), `thumbs.rs`, `dedupe.rs`, `steam.rs`, `vault.rs`, `backup.rs`, e `ui.rs` com as telas em `ui/*.slint`.
+
+## Versões
+
+O Acervo segue [versionamento semântico](https://semver.org/lang/pt-BR/). A versão do programa fica no `Cargo.toml`, o formato do catálogo tem número próprio (gravado no banco, e um catálogo de versão mais nova que o programa não é aberto) e o histórico está no [CHANGELOG](CHANGELOG.md).
+
+Para publicar uma versão: suba o número no `Cargo.toml`, escreva a seção no `CHANGELOG.md`, envie as mudanças e rode o fluxo **Release** na aba Actions informando a versão. Ele confere tudo, roda os testes, compila, monta o instalador e cria o release com o SHA-256. O fluxo **CI** roda os testes a cada envio.
+
+## Limites
+
+- Só Windows.
+- Busca só por nome, não pelo conteúdo dos arquivos.
+- A leitura da MFT, o diário USN e o serviço dependem de administrador e ainda foram pouco usados fora do meu PC. Se algo falhar, o programa cai para a varredura por pastas.
+- Miniaturas de vídeo dependem de o Windows saber abrir o formato; sem isso o arquivo fica com um quadrado com a extensão.
+- Uma pasta renomeada fora do programa só aparece no novo lugar depois de varrer a fonte de novo.
+- Ainda não tem licença definida.
