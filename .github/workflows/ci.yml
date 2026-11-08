@@ -29,7 +29,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev libssl-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Testes
-        run: cargo test --locked --lib --bin acervo-cli
-      - name: Compila o programa
-        run: cargo check --locked --bin acervo
+      # Versão para Linux é experimental: confere que compila. Os testes ainda assumem caminhos
+      # do Windows (barra invertida) e rodam só no Windows.
+      - name: Compila
+        run: cargo check --locked --bins

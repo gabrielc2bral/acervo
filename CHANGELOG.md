@@ -36,8 +36,10 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
   prioridade abaixo do normal.
 - Em "Adicionar HD" não aparecem mais as unidades que já estão no Acervo, e adicionar uma pasta
   que já está dentro de uma fonte é recusado.
-- **Versão para Linux** (programa e linha de comando, `.tar.gz` no release). Sem serviço nem
-  leitura da MFT: usa a varredura por pastas e o vigia de pastas.
+- **Versão para Linux, experimental** (programa e linha de comando, `.tar.gz` no release). Sem
+  serviço nem leitura da MFT: usa a varredura por pastas e o vigia de pastas. Ainda assume
+  caminhos no estilo do Windows em alguns pontos (separação de Steam/repacks, Cofre), então a
+  classificação pode falhar no Linux.
 
 ## [1.2.0] - 2026-11-07
 
