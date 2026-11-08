@@ -58,7 +58,7 @@ export component SetupWindow inherits Window {
             CheckBox { text: "Criar atalho na Área de Trabalho"; checked <=> root.desktop-shortcut; enabled: !root.busy; }
             CheckBox { text: "Criar atalho no Menu Iniciar"; checked <=> root.start-menu-shortcut; enabled: !root.busy; }
             Rectangle {
-                height: 78px;
+                height: 128px;
                 border-radius: 8px;
                 background: #2b2b2b;
                 border-width: 1px;
@@ -66,9 +66,9 @@ export component SetupWindow inherits Window {
                 VerticalLayout {
                     padding: 12px;
                     spacing: 4px;
-                    Text { text: "Serviço do Windows (obrigatório)"; color: #60cdff; font-size: 13px; font-weight: 600; }
+                    Text { text: "Aviso: serviço do Windows (obrigatório)"; color: #60cdff; font-size: 13px; font-weight: 600; }
                     Text {
-                        text: "Instalado junto: lê a tabela de arquivos do NTFS e acompanha o que é criado ou apagado, sem pedir permissão de administrador a cada uso. O Windows pede a permissão uma vez agora.";
+                        text: "O Acervo instala um serviço que inicia junto com o Windows e fica em segundo plano, usando pouco do PC. Ele lê a tabela de arquivos do NTFS e acompanha o que é criado, movido, renomeado ou apagado, sem varrer tudo de novo. O Windows pede a permissão uma vez agora.\nUm ícone do Acervo fica nos ícones ocultos da barra de tarefas: nele você para ou inicia o serviço. Para remover tudo: Configurações do Windows > Aplicativos > Acervo.";
                         color: #c8c8c8;
                         font-size: 12px;
                         wrap: word-wrap;

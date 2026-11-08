@@ -95,9 +95,8 @@ pub fn try_scan(
     on_progress: &mut dyn FnMut(&Progress),
 ) -> Result<FastOutcome> {
     use crate::kind::{classify, has_hidden_or_system_attr, is_system_dir};
-    use crate::scan::{finish_scan, INSERT_FILE};
+    use crate::scan::Stage;
     use ntfs_reader::{DefaultPathCache, FileInfo, MftScan, NtfsReaderError, Volume};
-    use rusqlite::params;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
@@ -114,58 +113,54 @@ pub fn try_scan(
         Err(_) => return Ok(FastOutcome::NotApplicable),
     };
 
-    let tx = db.conn.transaction()?;
-    tx.execute("DELETE FROM files WHERE source_id = ?1", params![source_id])?;
-
+    // A leitura da MFT (minutos num HD grande) vai para um banco temporário; o catálogo só é
+    // travado na troca final, que dura segundos.
+    let stage = Stage::new()?;
     let mut progress = Progress::default();
     let mut cache = DefaultPathCache::new();
-    {
-        let mut insert = tx.prepare(INSERT_FILE)?;
-        while let Some(chunk) = scan.next_chunk()? {
-            if cancel.load(Ordering::Relaxed) {
-                return Ok(FastOutcome::Done(None));
-            }
-            for file in chunk.files() {
-                let info = FileInfo::with_cache(&file, &mut cache);
-                if info.is_directory || info.is_deleted {
-                    continue;
-                }
-                if opts.skip_hidden && has_hidden_or_system_attr(info.file_attributes) {
-                    continue;
-                }
-                let Some(full_path) = info.path.as_ref() else {
-                    continue;
-                };
-                let full_path = PathBuf::from(strip_device_prefix(&full_path.to_string_lossy()));
-                let in_system_dir = full_path
-                    .components()
-                    .any(|part| is_system_dir(&part.as_os_str().to_string_lossy()));
-                if in_system_dir {
-                    continue;
-                }
-                let dir = full_path
-                    .parent()
-                    .map(|parent| parent.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-
-                insert.execute(params![
-                    source_id,
-                    dir,
-                    info.name,
-                    info.size as i64,
-                    info.modified.map(|time| time.unix_timestamp()),
-                    classify(&info.name).as_str(),
-                    Some(file.number() as i64),
-                ])?;
-                progress.files += 1;
-                progress.bytes += info.size;
-            }
-            on_progress(&progress);
+    while let Some(chunk) = scan.next_chunk()? {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(FastOutcome::Done(None));
         }
+        for file in chunk.files() {
+            let info = FileInfo::with_cache(&file, &mut cache);
+            if info.is_directory || info.is_deleted {
+                continue;
+            }
+            if opts.skip_hidden && has_hidden_or_system_attr(info.file_attributes) {
+                continue;
+            }
+            let Some(full_path) = info.path.as_ref() else {
+                continue;
+            };
+            let full_path = PathBuf::from(strip_device_prefix(&full_path.to_string_lossy()));
+            let in_system_dir = full_path
+                .components()
+                .any(|part| is_system_dir(&part.as_os_str().to_string_lossy()));
+            if in_system_dir {
+                continue;
+            }
+            let dir = full_path
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            stage.insert(
+                source_id,
+                &dir,
+                &info.name,
+                info.size as i64,
+                info.modified.map(|time| time.unix_timestamp()),
+                classify(&info.name).as_str(),
+                Some(file.number() as i64),
+            )?;
+            progress.files += 1;
+            progress.bytes += info.size;
+        }
+        on_progress(&progress);
     }
 
-    finish_scan(&tx, source_id)?;
-    tx.commit()?;
+    stage.commit_into(db, source_id)?;
     on_progress(&progress);
     Ok(FastOutcome::Done(Some(progress)))
 }

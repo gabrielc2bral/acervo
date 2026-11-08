@@ -12,6 +12,33 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
 2. anote aqui o que mudou;
 3. gere o instalador (`scripts\build-release.ps1`) e marque a versão no git (`git tag vX.Y.Z`).
 
+## [1.2.1] - 2026-11-07
+
+### Corrigido
+- **"database is locked" na tela Fontes e buscas travando durante varreduras.** A varredura agora
+  grava num arquivo temporário e só troca as linhas do catálogo no fim, numa operação de poucos
+  segundos. O tempo de espera do banco subiu para 30 s e a limpeza de arquivos apagados deixou de
+  falhar a listagem quando o banco está ocupado.
+- **Serviço do Windows confiável.** O sinal de vida e as tarefas ficam num banco próprio
+  (`service.db`), então o serviço não parece "morto" durante uma varredura longa. A instalação
+  remove o serviço antigo de verdade antes de criar o novo, confere que ele iniciou e deu sinal de
+  vida, e mostra o erro real se algo falhar. Tudo é anotado em `C:\ProgramData\Acervo\service.log`.
+- O app avisa quando o serviço não pega a tarefa em 30 s, em vez de esperar para sempre.
+
+### Novo
+- **O serviço acompanha tudo pelo diário USN, sem varrer de novo:** arquivos criados, alterados,
+  renomeados, movidos e apagados, e agora também **pastas renomeadas ou movidas** (os arquivos de
+  dentro mudam de caminho no catálogo na hora).
+- **Ícone na bandeja (ícones ocultos)** com o estado do serviço, "Abrir o Acervo", "Parar / iniciar
+  o serviço" e "Ver o registro do serviço". Abre junto com o Windows.
+- **Aviso no instalador** explicando o serviço, o ícone da bandeja e como remover.
+- O serviço inicia junto com o Windows (início atrasado, para não pesar na entrada) e roda com
+  prioridade abaixo do normal.
+- Em "Adicionar HD" não aparecem mais as unidades que já estão no Acervo, e adicionar uma pasta
+  que já está dentro de uma fonte é recusado.
+- **Versão para Linux** (programa e linha de comando, `.tar.gz` no release). Sem serviço nem
+  leitura da MFT: usa a varredura por pastas e o vigia de pastas.
+
 ## [1.2.0] - 2026-11-07
 
 ### Novo

@@ -23,6 +23,7 @@ fn main() -> Result<()> {
         // Com "baixar", também baixa o instalador e confere o SHA-256 (sem instalar nada).
         ["update-check", current] => update_check(current, false),
         ["update-check", current, "baixar"] => update_check(current, true),
+        ["service-info"] => service_info(),
         ["stats"] => stats(),
         ["thumbs-report"] => thumbs_report(),
         ["thumbs-generate"] => thumbs_generate(),
@@ -117,6 +118,35 @@ fn thumbs_bench(kind: &str, count: usize, threads: usize) -> Result<()> {
         made.load(Ordering::Relaxed),
         none.load(Ordering::Relaxed)
     );
+    Ok(())
+}
+
+/// Diagnóstico do serviço do Windows: estado no Windows, sinal de vida, tarefas e posições do USN.
+fn service_info() -> Result<()> {
+    let db_path = Db::default_path()?;
+    let db = Db::open(&db_path)?;
+    let link = acervo::link::ServiceLink::open(&db_path)?;
+    println!("estado no Windows: {:?}", acervo::service::installed_state());
+    match link.seconds_since_beat() {
+        None => println!("sinal de vida: nunca (ou o serviço parou normalmente)"),
+        Some(seconds) => println!("sinal de vida: há {seconds} s ({})", if link.is_alive() { "ativo" } else { "parado" }),
+    }
+    println!("modo de administrador: {:?}", db.get_setting("admin_mode")?);
+    let jobs = link.recent_jobs(10)?;
+    println!("tarefas do serviço (últimas {}):", jobs.len());
+    for job in jobs {
+        println!("  #{} {} fonte {}: {} - {}", job.id, job.kind, job.source_id, job.state, job.progress);
+    }
+    println!("registro ({}), últimas linhas:", acervo::log::path().display());
+    println!("{}", acervo::log::tail(15));
+    let mut stmt = db.conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'usn%' ORDER BY key")?;
+    let positions: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    println!("diário USN ({} entradas):", positions.len());
+    for (key, value) in positions {
+        println!("  {key} = {value}");
+    }
     Ok(())
 }
 

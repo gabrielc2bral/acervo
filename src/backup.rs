@@ -54,7 +54,7 @@ pub fn create(db_path: &Path, destination: &Path, report: &dyn Fn(&str)) -> Resu
     // Tira da cópia o que só vale para esta máquina.
     let copy = Db::open(&temporary_db)?;
     copy.conn.execute_batch(&format!(
-        "DELETE FROM changes; DELETE FROM service_jobs; DELETE FROM settings WHERE {MACHINE_SETTINGS_SQL};"
+        "DELETE FROM changes; DELETE FROM settings WHERE {MACHINE_SETTINGS_SQL};"
     ))?;
     let summary = Summary {
         files: copy.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?,

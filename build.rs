@@ -9,7 +9,7 @@ fn main() {
     // arquivos vazios; o instalador recusa rodar assim. Ver `scripts/build-release.ps1`.
     let payload = Path::new("payload");
     let _ = std::fs::create_dir_all(payload);
-    for name in ["acervo.exe", "acervo-service.exe", "acervo-cli.exe"] {
+    for name in ["acervo.exe", "acervo-service.exe", "acervo-cli.exe", "acervo-tray.exe"] {
         let file = payload.join(name);
         if !file.exists() {
             let _ = std::fs::write(file, b"");

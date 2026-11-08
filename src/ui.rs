@@ -439,6 +439,7 @@ pub fn run() -> Result<()> {
                         Ok(()) => {
                             ui.set_status("Fonte removida do catálogo.".into());
                             let _ = refresh_sources(ui, &db_path);
+                            refresh_drives(ui);
                             refresh_stats(&ui.as_weak(), &db_path);
                             index.rebuild(db_path);
                         }
@@ -1331,8 +1332,10 @@ fn run_listing(
                 }
             }
             if !gone.is_empty() {
-                // O registro de mudanças avisa o índice em memória, sem reconstruir.
-                db.delete_files(&gone)?;
+                // O registro de mudanças avisa o índice em memória, sem reconstruir. É só uma
+                // limpeza: se o catálogo estiver ocupado com uma varredura, não pode derrubar a
+                // lista ("database is locked"); a limpeza fica para a próxima vez.
+                let _ = db.delete_files(&gone);
             }
             Ok((found, query, total.map(|total| total.saturating_sub(gone.len()))))
         },
@@ -1576,6 +1579,16 @@ fn add_and_scan(weak: &Weak<MainWindow>, app: &Rc<App>, path: &Path) {
     }
     let name = path.to_string_lossy().into_owned();
     let db_path = app.db_path.clone();
+    let existing: Vec<String> = Db::open(&db_path)
+        .and_then(|db| db.sources())
+        .map(|sources| sources.into_iter().map(|source| source.path).collect())
+        .unwrap_or_default();
+    if let Some(covering) = covering_source(&name, &existing) {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_status(format!("\"{name}\" já está no Acervo (fonte {covering}).").into());
+        }
+        return;
+    }
     match Db::open(&db_path).and_then(|db| db.add_source(&name, &name)) {
         Ok(id) => start_scan(weak, app, db_path, id, false),
         Err(error) => {
@@ -1618,6 +1631,7 @@ fn start_scan(weak: &Weak<MainWindow>, app: &Rc<App>, db_path: PathBuf, source_i
                 run_vault_search(&ui.as_weak(), catalog, vault_generation);
             } else {
                 let _ = refresh_sources(ui, &main_db);
+                refresh_drives(ui);
                 refresh_stats(&ui.as_weak(), &main_db);
                 index.rebuild(main_db.clone()); // a busca em memória passa a enxergar o que foi varrido
                 // Os arquivos novos já ganham miniatura (só os desta fonte).
@@ -1715,28 +1729,37 @@ fn done_message(progress: &Progress) -> String {
 
 /// Pede a varredura rápida ao serviço do Windows (que já é administrador) e acompanha o andamento.
 fn run_via_service(weak: &Weak<MainWindow>, db_path: &Path, source_id: i64, cancel: &AtomicBool) -> Result<String> {
-    let db = Db::open(db_path)?;
-    let job_id = service::request_scan(&db, source_id)?;
+    let link = acervo::link::ServiceLink::open(db_path)?;
+    let job_id = service::request_scan(db_path, source_id)?;
+    let started = Instant::now();
     let mut silent_since: Option<Instant> = None;
     loop {
         std::thread::sleep(Duration::from_millis(500));
         if cancel.load(Ordering::Relaxed) {
-            db.set_job(job_id, "cancel", "")?;
+            link.set_job(job_id, "cancel", "")?;
         }
-        let Some(job) = db.job(job_id)? else {
+        let Some(job) = link.job(job_id)? else {
             anyhow::bail!("a tarefa do serviço sumiu");
         };
         match job.state.as_str() {
             "done" => return Ok(job.progress),
             "failed" => anyhow::bail!("{}", job.progress),
             "cancelled" => return Ok("Varredura cancelada.".to_string()),
+            "queued" => {
+                set_status_later(weak, "Serviço do Windows: tarefa na fila...".to_string());
+                // O serviço está vivo mas não pegou a tarefa: não espera para sempre.
+                if started.elapsed() > Duration::from_secs(30) {
+                    let _ = link.set_job(job_id, "cancelled", "Sem resposta do serviço.");
+                    anyhow::bail!("o serviço do Acervo não pegou a tarefa em 30 segundos (veja {})", acervo::log::path().display());
+                }
+            }
             _ => set_status_later(weak, format!("Serviço do Windows: {}", job.progress)),
         }
         // Se o serviço parar de dar sinal de vida no meio, não fica esperando para sempre.
-        if service::is_alive(&db) {
+        if link.is_alive() {
             silent_since = None;
         } else if silent_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(20) {
-            anyhow::bail!("o serviço do Acervo parou de responder");
+            anyhow::bail!("o serviço do Acervo parou de responder (veja {})", acervo::log::path().display());
         }
     }
 }
@@ -1780,8 +1803,7 @@ fn run_scan(
             let mode = settings.admin_mode;
             if mode == AdminMode::Service {
                 // Serviço do Windows instalado e ativo: ele faz a varredura rápida, sem perguntar nada.
-                let alive = Db::open(db_path).map(|db| service::is_alive(&db)).unwrap_or(false);
-                if alive {
+                if service::is_alive_at(db_path) {
                     return run_via_service(weak, db_path, source_id, cancel);
                 }
                 set_status_later(weak, "O serviço do Acervo não está ativo; pedindo permissão ao Windows...".to_string());
@@ -1877,14 +1899,32 @@ fn refresh_sources(ui: &MainWindow, db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Minúsculas, barras normais e sem barra no fim: "D:\" e "d:" viram "d:".
+fn normalize_source_path(path: &str) -> String {
+    path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+}
+
+/// `candidate` é a própria fonte ou está dentro de uma fonte já cadastrada.
+/// Devolve a fonte que já cobre a pasta.
+fn covering_source<'a>(candidate: &str, sources: &'a [String]) -> Option<&'a String> {
+    let candidate = normalize_source_path(candidate);
+    sources.iter().find(|source| {
+        let source = normalize_source_path(source);
+        candidate == source || candidate.starts_with(&format!("{source}\\"))
+    })
+}
+
 /// Unidades A:..Z: que existem agora, para "Adicionar HD". Em segundo plano: uma unidade de
 /// cartão vazia ou de rede pode demorar para responder.
 fn refresh_drives(ui: &MainWindow) {
+    // Unidades que já são fontes do catálogo não aparecem para escolher de novo.
+    let added: Vec<String> = ui.get_sources().iter().map(|source| normalize_source_path(&source.name)).collect();
     background(
         &ui.as_weak(),
-        || -> Vec<slint::SharedString> {
+        move || -> Vec<slint::SharedString> {
             ('A'..='Z')
                 .map(|letter| format!("{letter}:\\"))
+                .filter(|root| !added.contains(&normalize_source_path(root)))
                 .filter(|root| Path::new(root).exists())
                 .map(Into::into)
                 .collect()
@@ -2017,7 +2057,7 @@ fn refresh_service_status(weak: &Weak<MainWindow>, db_path: &Path) {
     background(
         weak,
         move || {
-            let alive = Db::open(&db_path).map(|db| service::is_alive(&db)).unwrap_or(false);
+            let alive = service::is_alive_at(&db_path);
             match (service::installed_state(), alive) {
                 (service::Installed::No, _) => "Serviço do Windows: não instalado".to_string(),
                 (service::Installed::Running, true) => "Serviço do Windows: instalado e ativo".to_string(),
@@ -2351,7 +2391,7 @@ fn show_duplicate_copies(weak: &Weak<MainWindow>, db_path: &Path, index: i32) {
                 });
             }
             if !gone.is_empty() {
-                db.delete_files(&gone)?;
+                let _ = db.delete_files(&gone); // limpeza oportuna: se o banco estiver ocupado, fica para depois
             }
             Ok(copies)
         },

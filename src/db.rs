@@ -120,29 +120,6 @@ fn like_pattern(text: &str) -> String {
     format!("%{}%", escape_like(text))
 }
 
-/// Tarefa que o app pede ao serviço do Windows.
-#[derive(Debug, Clone)]
-pub struct Job {
-    pub id: i64,
-    pub kind: String,
-    pub source_id: i64,
-    /// queued, running, done, failed, cancel (pedido do app) ou cancelled.
-    pub state: String,
-    pub progress: String,
-}
-
-impl Job {
-    fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Job> {
-        Ok(Job {
-            id: r.get(0)?,
-            kind: r.get(1)?,
-            source_id: r.get(2)?,
-            state: r.get(3)?,
-            progress: r.get(4)?,
-        })
-    }
-}
-
 /// Uma cópia de um arquivo duplicado.
 pub struct CopyRow {
     pub id: i64,
@@ -187,8 +164,9 @@ impl Db {
     }
 
     fn init(conn: Connection) -> Result<Db> {
-        // A varredura roda em outra conexão; espera em vez de falhar com "database is locked".
-        conn.busy_timeout(Duration::from_secs(5))?;
+        // Outra conexão (a varredura, o serviço) pode estar gravando: espera até 30 s em vez de
+        // falhar na hora com "database is locked". Quem só lê (a busca) nunca espera, por causa do WAL.
+        conn.busy_timeout(Duration::from_secs(30))?;
         // `acervo_key(caminho)`: a mesma chave das miniaturas, para ligar miniatura -> arquivo -> fonte.
         conn.create_scalar_function(
             "acervo_key",
@@ -242,15 +220,8 @@ impl Db {
                  op      TEXT NOT NULL,
                  file_id INTEGER NOT NULL
              );
-             -- Pedidos do app para o serviço do Windows (que roda como administrador).
-             CREATE TABLE IF NOT EXISTS service_jobs (
-                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                 kind      TEXT NOT NULL,
-                 source_id INTEGER NOT NULL,
-                 state     TEXT NOT NULL,
-                 progress  TEXT NOT NULL DEFAULT '',
-                 created   INTEGER NOT NULL
-             );",
+             -- (As tarefas do serviço do Windows ficam no service.db, ver `link`.)
+             ",
         )?;
         // `frn`: número do arquivo no NTFS. Com ele o diário USN apaga/atualiza o arquivo certo
         // sem precisar saber o caminho. Catálogos antigos ganham a coluna vazia (sem refazer nada).
@@ -339,67 +310,6 @@ impl Db {
         )?)
     }
 
-    // ------------------------------------------------ Fila de tarefas do serviço
-
-    pub fn enqueue_job(&self, kind: &str, source_id: i64) -> Result<i64> {
-        let now = crate::scan::unix_seconds(Ok(std::time::SystemTime::now())).unwrap_or(0);
-        self.conn.execute(
-            "INSERT INTO service_jobs (kind, source_id, state, created) VALUES (?1, ?2, 'queued', ?3)",
-            params![kind, source_id, now],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn next_queued_job(&self) -> Result<Option<Job>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id, kind, source_id, state, progress FROM service_jobs
-                 WHERE state = 'queued' ORDER BY id LIMIT 1",
-                [],
-                Job::from_row,
-            )
-            .optional()?)
-    }
-
-    pub fn job(&self, id: i64) -> Result<Option<Job>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id, kind, source_id, state, progress FROM service_jobs WHERE id = ?1",
-                params![id],
-                Job::from_row,
-            )
-            .optional()?)
-    }
-
-    pub fn set_job(&self, id: i64, state: &str, progress: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE service_jobs SET state = ?2, progress = ?3 WHERE id = ?1",
-            params![id, state, progress],
-        )?;
-        Ok(())
-    }
-
-    /// Só muda o texto de andamento; se o app pediu para cancelar, o estado não é sobrescrito.
-    pub fn set_job_progress(&self, id: i64, progress: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE service_jobs SET progress = ?2 WHERE id = ?1",
-            params![id, progress],
-        )?;
-        Ok(())
-    }
-
-    /// Apaga tarefas terminadas antigas.
-    pub fn clean_jobs(&self) -> Result<()> {
-        let now = crate::scan::unix_seconds(Ok(std::time::SystemTime::now())).unwrap_or(0);
-        self.conn.execute(
-            "DELETE FROM service_jobs WHERE state IN ('done', 'failed', 'cancelled') AND created < ?1",
-            params![now - 86_400],
-        )?;
-        Ok(())
-    }
-
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -469,6 +379,38 @@ impl Db {
         )?;
         self.delete_files(&ids)?;
         Ok(ids.len())
+    }
+
+    /// Pasta renomeada ou movida: tudo que estava dentro dela passa para o caminho novo, sem
+    /// varrer o disco. As linhas antigas saem e as novas entram no registro de mudanças, para o
+    /// índice em memória acompanhar. Devolve quantos arquivos mudaram de lugar.
+    pub fn move_dir(&self, source_id: i64, old_dir: &str, new_dir: &str) -> Result<usize> {
+        let old_dir = old_dir.trim_end_matches('\\');
+        let new_dir = new_dir.trim_end_matches('\\');
+        type Row = (i64, String, String, i64, Option<i64>, String, Option<i64>);
+        let inside = format!("{}\\\\%", escape_like(old_dir));
+        let rows: Vec<Row> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, dir, name, size, mtime, kind, frn FROM files
+                 WHERE source_id = ?1 AND (dir = ?2 OR dir LIKE ?3 ESCAPE '\\')",
+            )?;
+            let found = stmt.query_map(params![source_id, old_dir, inside], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?;
+            found.collect::<std::result::Result<_, _>>()?
+        };
+        let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+        self.delete_files(&ids)?;
+        for (_, dir, name, size, mtime, kind, frn) in &rows {
+            let moved = format!("{new_dir}{}", &dir[old_dir.len()..]);
+            self.conn.execute(
+                "INSERT INTO files (source_id, dir, name, size, mtime, kind, frn)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![source_id, moved, name, size, mtime, kind, frn],
+            )?;
+            self.log_change("add", self.conn.last_insert_rowid())?;
+        }
+        Ok(rows.len())
     }
 
     fn ids_where(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<i64>> {
@@ -1006,6 +948,22 @@ mod tests {
         let videos = db.search("", Some("video"), 10).unwrap();
         assert_eq!(videos.len(), 1);
         assert_eq!(videos[0].name, "a.mkv");
+    }
+
+    #[test]
+    fn moving_a_folder_rewrites_paths_inside_it_only() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.add_source("D:", "D:\\").unwrap();
+        insert(&db, id, "D:\\Jogos", "a.iso", 1, "other");
+        insert(&db, id, "D:\\Jogos\\Sub", "b.iso", 1, "other");
+        insert(&db, id, "D:\\JogosVelhos", "c.iso", 1, "other");
+        let moved = db.move_dir(id, "D:\\Jogos", "D:\\Games").unwrap();
+        assert_eq!(moved, 2);
+        let paths: Vec<String> = db.search("iso", None, 10).unwrap().into_iter().map(|f| f.path).collect();
+        assert!(paths.contains(&"D:\\Games\\a.iso".to_string()), "{paths:?}");
+        assert!(paths.contains(&"D:\\Games\\Sub\\b.iso".to_string()), "{paths:?}");
+        assert!(paths.contains(&"D:\\JogosVelhos\\c.iso".to_string()), "{paths:?}");
+        assert_eq!(paths.len(), 3);
     }
 
     #[test]

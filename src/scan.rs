@@ -11,10 +11,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// `?7` é o número do arquivo no NTFS (só a varredura rápida da MFT sabe; as outras mandam NULL).
-pub(crate) const INSERT_FILE: &str =
-    "INSERT INTO files (source_id, dir, name, size, mtime, kind, frn) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Progress {
     pub files: u64,
@@ -99,50 +95,115 @@ pub fn scan_walk(
             });
         });
 
-    let tx = db.conn.transaction()?;
-    tx.execute("DELETE FROM files WHERE source_id = ?1", params![source_id])?;
-
+    // Os arquivos lidos vão para um banco temporário. O catálogo de verdade só é tocado no fim,
+    // numa troca curta: durante a leitura (que pode levar minutos) ninguém fica esperando o banco.
+    let stage = Stage::new()?;
     let mut progress = Progress::default();
-    {
-        let mut insert = tx.prepare(INSERT_FILE)?;
-        for entry in walker {
-            if cancel.load(Ordering::Relaxed) {
-                return Ok(Outcome::Cancelled); // a transação é descartada
-            }
-            let Ok(entry) = entry else { continue };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            if opts.skip_hidden && has_hidden_or_system_attr(attributes(&meta)) {
-                continue;
-            }
+    for entry in walker {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(Outcome::Cancelled); // nada foi gravado: o catálogo antigo continua intacto
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if opts.skip_hidden && has_hidden_or_system_attr(attributes(&meta)) {
+            continue;
+        }
 
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let dir = entry.parent_path().to_string_lossy().into_owned();
-            let size = meta.len();
-            insert.execute(params![
-                source_id,
-                dir,
-                name,
-                size as i64,
-                unix_seconds(meta.modified()),
-                classify(&name).as_str(),
-                Option::<i64>::None,
-            ])?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let dir = entry.parent_path().to_string_lossy().into_owned();
+        let size = meta.len();
+        stage.insert(source_id, &dir, &name, size as i64, unix_seconds(meta.modified()), classify(&name).as_str(), None)?;
 
-            progress.files += 1;
-            progress.bytes += size;
-            if progress.files % 2000 == 0 {
-                on_progress(&progress);
-            }
+        progress.files += 1;
+        progress.bytes += size;
+        if progress.files % 2000 == 0 {
+            on_progress(&progress);
         }
     }
 
-    finish_scan(&tx, source_id)?;
-    tx.commit()?;
+    stage.commit_into(db, source_id)?;
     on_progress(&progress);
     Ok(Outcome::Done(progress))
+}
+
+/// Arquivos lidos na varredura, num banco temporário, até o momento de trocar no catálogo.
+pub(crate) struct Stage {
+    // `conn` vem antes de `file`: o arquivo só é apagado depois de a conexão fechar (no Windows
+    // não dá para apagar um arquivo aberto).
+    conn: rusqlite::Connection,
+    file: StageFile,
+}
+
+struct StageFile(std::path::PathBuf);
+
+impl Drop for StageFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+impl Stage {
+    pub(crate) fn new() -> Result<Stage> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "acervo-varredura-{}-{}.db",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let conn = rusqlite::Connection::open(&path)?;
+        let file = StageFile(path);
+        // Arquivo descartável: sem diário e sem esperar o disco gravar.
+        conn.execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             CREATE TABLE files (source_id INTEGER, dir TEXT, name TEXT, size INTEGER, mtime INTEGER, kind TEXT, frn INTEGER);
+             BEGIN;",
+        )?;
+        Ok(Stage { conn, file })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert(
+        &self,
+        source_id: i64,
+        dir: &str,
+        name: &str,
+        size: i64,
+        mtime: Option<i64>,
+        kind: &str,
+        frn: Option<i64>,
+    ) -> Result<()> {
+        self.conn
+            .prepare_cached("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?
+            .execute(params![source_id, dir, name, size, mtime, kind, frn])?;
+        Ok(())
+    }
+
+    /// Troca as linhas da fonte no catálogo pelas lidas, numa transação só (a única parte em que
+    /// o catálogo fica travado para gravação, e dura segundos).
+    pub(crate) fn commit_into(self, db: &mut Db, source_id: i64) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        let path = self.file.0.to_string_lossy().replace('\'', "''");
+        db.conn.execute_batch(&format!("ATTACH DATABASE '{path}' AS stage"))?;
+        let result = (|| -> Result<()> {
+            let tx = db.conn.transaction()?;
+            tx.execute("DELETE FROM main.files WHERE source_id = ?1", params![source_id])?;
+            tx.execute(
+                "INSERT INTO main.files (source_id, dir, name, size, mtime, kind, frn)
+                 SELECT source_id, dir, name, size, mtime, kind, frn FROM stage.files",
+                [],
+            )?;
+            finish_scan(&tx, source_id)?;
+            tx.commit()?;
+            Ok(())
+        })();
+        let _ = db.conn.execute_batch("DETACH DATABASE stage");
+        result
+    }
 }
 
 /// Passos finais comuns às duas varreduras, dentro da mesma transação.

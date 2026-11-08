@@ -6,6 +6,8 @@ pub mod dedupe;
 pub mod fast;
 pub mod index;
 pub mod kind;
+pub mod link;
+pub mod log;
 pub mod scan;
 pub mod service;
 pub mod settings;

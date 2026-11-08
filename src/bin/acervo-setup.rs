@@ -28,6 +28,8 @@ mod windows_main {
     const APP: &[u8] = include_bytes!("../../payload/acervo.exe");
     const SERVICE: &[u8] = include_bytes!("../../payload/acervo-service.exe");
     const CLI: &[u8] = include_bytes!("../../payload/acervo-cli.exe");
+    const TRAY: &[u8] = include_bytes!("../../payload/acervo-tray.exe");
+    const TRAY_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const ICON_SVG: &[u8] = include_bytes!("../../assets/acervo.svg");
     const ICON_ICO: &[u8] = include_bytes!("../../assets/acervo.ico");
 
@@ -103,7 +105,7 @@ mod windows_main {
     }
 
     fn payload_is_complete() -> bool {
-        !APP.is_empty() && !SERVICE.is_empty() && !CLI.is_empty() && !ICON_ICO.is_empty()
+        !APP.is_empty() && !SERVICE.is_empty() && !CLI.is_empty() && !TRAY.is_empty() && !ICON_ICO.is_empty()
     }
 
     fn write_payload(dir: &Path) -> Result<()> {
@@ -112,6 +114,7 @@ mod windows_main {
             ("acervo.exe", APP),
             ("acervo-service.exe", SERVICE),
             ("acervo-cli.exe", CLI),
+            ("acervo-tray.exe", TRAY),
             ("acervo.svg", ICON_SVG),
             ("acervo.ico", ICON_ICO),
         ] {
@@ -142,6 +145,7 @@ mod windows_main {
             wait_service_stopped();
         }
         let _ = quiet(Command::new("taskkill").args(["/F", "/IM", "acervo.exe"])).status();
+        let _ = quiet(Command::new("taskkill").args(["/F", "/IM", "acervo-tray.exe"])).status();
 
         report("Copiando os arquivos...");
         write_payload(dir)?;
@@ -157,17 +161,24 @@ mod windows_main {
         drop(catalog);
 
         report("Instalando o serviço do Windows...");
-        let status = quiet(
+        let output = quiet(
             Command::new(dir.join("acervo-service.exe"))
                 .arg("install")
                 .arg("--db")
                 .arg(&db_path),
         )
-        .status()
+        .output()
         .context("não foi possível rodar o instalador do serviço")?;
-        if !status.success() || service::installed_state() == service::Installed::No {
-            bail!("O serviço do Windows não foi instalado. Ele é obrigatório para o Acervo.");
+        if !output.status.success() || service::installed_state() != service::Installed::Running {
+            let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "O serviço do Windows não foi instalado ou não iniciou. Ele é obrigatório para o Acervo.\n{reason}\nDetalhes em {}",
+                acervo::log::path().display()
+            );
         }
+
+        report("Ativando o ícone da bandeja...");
+        enable_tray(dir);
 
         report("Criando os atalhos...");
         let target = dir.join("acervo.exe");
@@ -182,6 +193,18 @@ mod windows_main {
         report("Registrando em Aplicativos e recursos...");
         register_uninstall(dir)?;
         Ok(())
+    }
+
+    /// Ícone na bandeja ("ícones ocultos"): abre com o Windows para todos os usuários e já é
+    /// iniciado agora. Falha aqui não impede a instalação (o serviço é o que importa).
+    fn enable_tray(dir: &Path) {
+        use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+        let tray = dir.join("acervo-tray.exe");
+        if let Ok((key, _)) = RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(TRAY_RUN_KEY) {
+            let _ = key.set_value("AcervoTray", &format!("\"{}\"", tray.display()));
+        }
+        // Pelo explorer, o ícone abre com as permissões do usuário e não as do instalador.
+        let _ = quiet(Command::new("explorer.exe").arg(&tray)).spawn();
     }
 
     fn create_shortcut(link: &Path, target: &Path, icon: &Path, working_dir: &Path) -> Result<()> {
@@ -216,7 +239,7 @@ mod windows_main {
         )?;
         key.set_value("NoModify", &1u32)?;
         key.set_value("NoRepair", &1u32)?;
-        key.set_value("EstimatedSize", &(((APP.len() + SERVICE.len() + CLI.len()) / 1024) as u32))?;
+        key.set_value("EstimatedSize", &(((APP.len() + SERVICE.len() + CLI.len() + TRAY.len()) / 1024) as u32))?;
         Ok(())
     }
 
@@ -231,6 +254,13 @@ mod windows_main {
             let _ = quiet(Command::new("sc").args(["delete", service::SERVICE_NAME])).status();
         }
         let _ = quiet(Command::new("taskkill").args(["/F", "/IM", "acervo.exe"])).status();
+        let _ = quiet(Command::new("taskkill").args(["/F", "/IM", "acervo-tray.exe"])).status();
+        {
+            use winreg::{enums::{HKEY_LOCAL_MACHINE, KEY_SET_VALUE}, RegKey};
+            if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(TRAY_RUN_KEY, KEY_SET_VALUE) {
+                let _ = key.delete_value("AcervoTray");
+            }
+        }
 
         report("Removendo os atalhos...");
         let _ = std::fs::remove_file(options.desktop_link());

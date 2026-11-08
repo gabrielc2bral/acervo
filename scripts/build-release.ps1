@@ -8,12 +8,12 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 if (-not (Test-Path assets\acervo.ico)) { cargo run --example make_icon; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
 
 # 2) Programas otimizados (o instalador, nesta rodada, ainda sai com a carga vazia)
-cargo build --release --bin acervo --bin acervo-cli --bin acervo-service
+cargo build --release --bin acervo --bin acervo-cli --bin acervo-service --bin acervo-tray
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 # 3) Copia os programas para a carga do instalador e compila o instalador com eles dentro
 New-Item -ItemType Directory -Force payload, dist | Out-Null
-foreach ($name in 'acervo.exe', 'acervo-service.exe', 'acervo-cli.exe') { Copy-Item "target\release\$name" "payload\$name" -Force }
+foreach ($name in 'acervo.exe', 'acervo-service.exe', 'acervo-cli.exe', 'acervo-tray.exe') { Copy-Item "target\release\$name" "payload\$name" -Force }
 cargo build --release --bin acervo-setup
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 # O nome do instalador leva a versão do Cargo.toml

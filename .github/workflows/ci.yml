@@ -19,3 +19,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Testes
         run: cargo test --locked
+
+  test-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bibliotecas da interface
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Testes
+        run: cargo test --locked --lib --bin acervo-cli
+      - name: Compila o programa
+        run: cargo check --locked --bin acervo

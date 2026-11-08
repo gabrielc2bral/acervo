@@ -1,40 +1,35 @@
 //! Parte do Acervo que roda como administrador, dentro do serviço do Windows.
 //!
-//! O app comum não precisa de administrador: ele só deixa tarefas na tabela `service_jobs` do
-//! catálogo e lê o andamento de volta. O serviço:
+//! O app comum não precisa de administrador: ele só deixa tarefas no `service.db` (ver `link`) e lê
+//! o andamento de volta. O serviço:
 //! 1. faz a varredura rápida da MFT dos HDs NTFS (a que exige administrador);
 //! 2. acompanha o diário USN de cada HD, que registra tudo que foi criado, apagado ou renomeado,
 //!    inclusive enquanto o Acervo estava fechado, e ajusta o catálogo só nesses arquivos.
 //!
+//! Tudo que acontece vai para o registro `C:\ProgramData\Acervo\service.log`.
 //! Instalar o serviço pede a permissão do Windows uma única vez.
 
-use crate::db::{Db, Job};
+use crate::db::Db;
+use crate::link::{Job, ServiceLink};
+use crate::log;
 use crate::scan::{self, Outcome, Progress};
 use crate::settings::Settings;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+pub use crate::link::now_secs;
 
 pub const SERVICE_NAME: &str = "AcervoService";
-const HEARTBEAT_KEY: &str = "service_heartbeat";
-/// O serviço é considerado ativo se deu sinal de vida nos últimos segundos.
-const ALIVE_WINDOW_SECS: i64 = 10;
 
-pub fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+/// Permissões do serviço: o sistema e os administradores controlam tudo; quem está logado no PC pode
+/// ver o estado e **iniciar/parar** (é o que o ícone da bandeja faz), mas não reconfigurar nem apagar.
+pub const SERVICE_SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
 
-/// O serviço está rodando agora? (Ele escreve um sinal de vida no catálogo a cada segundo.)
-pub fn is_alive(db: &Db) -> bool {
-    db.get_setting(HEARTBEAT_KEY)
-        .ok()
-        .flatten()
-        .and_then(|text| text.parse::<i64>().ok())
-        .is_some_and(|beat| now_secs() - beat <= ALIVE_WINDOW_SECS)
+/// O serviço está dando sinal de vida agora? (Ele escreve a cada segundo, de uma thread só para isso.)
+pub fn is_alive_at(catalog_path: &Path) -> bool {
+    ServiceLink::open(catalog_path).map(|link| link.is_alive()).unwrap_or(false)
 }
 
 /// Estado do serviço no Windows, pelo `sc query`.
@@ -59,27 +54,93 @@ pub fn installed_state() -> Installed {
     }
 }
 
-/// Pede uma tarefa ao serviço e devolve o id dela.
-pub fn request_scan(db: &Db, source_id: i64) -> Result<i64> {
-    db.enqueue_job("scan", source_id)
+/// Pede uma varredura rápida ao serviço e devolve o id da tarefa.
+pub fn request_scan(catalog_path: &Path, source_id: i64) -> Result<i64> {
+    ServiceLink::open(catalog_path)?.enqueue_job("scan", source_id)
 }
 
 fn position_key(source_id: i64) -> String {
     format!("usn:{source_id}")
 }
 
+/// O serviço roda sempre; para não pesar no PC, trabalha com prioridade abaixo do normal.
+#[cfg(windows)]
+fn lower_priority() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS};
+    // SAFETY: só muda a prioridade do próprio processo.
+    unsafe {
+        let _ = SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+    }
+}
+
+#[cfg(not(windows))]
+fn lower_priority() {}
+
 /// Laço do serviço. Roda até `stop` ficar verdadeiro.
 pub fn run_loop(db_path: &Path, stop: &AtomicBool) {
-    let Ok(db) = Db::open(db_path) else { return };
+    log::write(&format!("serviço iniciado (catálogo: {})", db_path.display()));
+    lower_priority();
+
+    // Sinal de vida numa thread própria: continua batendo durante uma varredura longa.
+    let heartbeat_stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let Ok(link) = ServiceLink::open(db_path) else {
+                log::write("não foi possível abrir o service.db para o sinal de vida");
+                return;
+            };
+            while !heartbeat_stop.load(Ordering::Relaxed) {
+                let _ = link.beat();
+                for _ in 0..10 {
+                    if heartbeat_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            let _ = link.clear_beat();
+        });
+
+        work_loop(db_path, stop);
+        heartbeat_stop.store(true, Ordering::Relaxed);
+    });
+    log::write("serviço parado");
+}
+
+fn work_loop(db_path: &Path, stop: &AtomicBool) {
+    let Ok(link) = ServiceLink::open(db_path) else {
+        log::write("não foi possível abrir o service.db: o serviço não vai processar tarefas");
+        return;
+    };
+    if let Ok(count) = link.fail_interrupted_jobs() {
+        if count > 0 {
+            log::write(&format!("{count} tarefa(s) interrompida(s) por uma parada anterior foram marcadas como falha"));
+        }
+    }
+
+    // O catálogo pode demorar a ficar acessível (perfil do usuário ainda carregando no boot):
+    // tenta de novo em vez de desistir e deixar o serviço parado.
+    let db = loop {
+        match Db::open(db_path) {
+            Ok(db) => break db,
+            Err(error) => {
+                log::write(&format!("não foi possível abrir o catálogo ({error}); tentando de novo em 5 s"));
+                for _ in 0..50 {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    };
+
     let mut followers = follow::Followers::default();
     let mut last_sync: Option<Instant> = None;
     let mut last_trim = Instant::now();
-
     while !stop.load(Ordering::Relaxed) {
-        let _ = db.set_setting(HEARTBEAT_KEY, &now_secs().to_string());
-
-        if let Ok(Some(job)) = db.next_queued_job() {
-            run_job(&db, db_path, job);
+        if let Ok(Some(job)) = link.next_queued_job() {
+            run_job(&link, db_path, job, stop);
         }
         if last_sync.is_none_or(|at| at.elapsed() > Duration::from_secs(20)) {
             followers.sync(&db);
@@ -89,7 +150,7 @@ pub fn run_loop(db_path: &Path, stop: &AtomicBool) {
 
         if last_trim.elapsed() > Duration::from_secs(600) {
             let _ = db.trim_changes(200_000);
-            let _ = db.clean_jobs();
+            let _ = link.clean_jobs();
             last_trim = Instant::now();
         }
         for _ in 0..10 {
@@ -99,28 +160,30 @@ pub fn run_loop(db_path: &Path, stop: &AtomicBool) {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    let _ = db.set_setting(HEARTBEAT_KEY, "0");
 }
 
-fn run_job(db: &Db, db_path: &Path, job: Job) {
+fn run_job(link: &ServiceLink, db_path: &Path, job: Job, stop: &AtomicBool) {
     let finish = |state: &str, message: &str| {
-        let _ = db.set_job(job.id, state, message);
+        log::write(&format!("tarefa #{} ({}): {state} - {message}", job.id, job.kind));
+        let _ = link.set_job(job.id, state, message);
     };
     if job.kind != "scan" {
         return finish("failed", "tarefa desconhecida");
     }
-    let Ok(sources) = db.sources() else {
-        return finish("failed", "não foi possível ler as fontes");
-    };
-    let Some(source) = sources.into_iter().find(|source| source.id == job.source_id) else {
-        return finish("failed", "fonte não encontrada");
-    };
-    let root = PathBuf::from(&source.path);
     let Ok(mut scan_db) = Db::open(db_path) else {
         return finish("failed", "não foi possível abrir o catálogo");
     };
-    let options = Settings::load(db).map(|s| s.scan_options()).unwrap_or_default();
-    let _ = db.set_job(job.id, "running", "Iniciando a varredura rápida...");
+    let Some(source) = scan_db
+        .sources()
+        .ok()
+        .and_then(|sources| sources.into_iter().find(|source| source.id == job.source_id))
+    else {
+        return finish("failed", "fonte não encontrada");
+    };
+    let root = PathBuf::from(&source.path);
+    let options = Settings::load(&scan_db).map(|s| s.scan_options()).unwrap_or_default();
+    log::write(&format!("tarefa #{}: varrendo {}", job.id, root.display()));
+    let _ = link.set_job(job.id, "running", "Iniciando a varredura rápida...");
 
     // A posição do diário é anotada ANTES de varrer: o que mudar durante a varredura será
     // aplicado depois (aplicar uma mudança duas vezes não faz mal).
@@ -129,15 +192,15 @@ fn run_job(db: &Db, db_path: &Path, job: Job) {
     let cancel = AtomicBool::new(false);
     let mut last_report = Instant::now();
     let mut report = |progress: &Progress| {
+        if stop.load(Ordering::Relaxed) {
+            cancel.store(true, Ordering::Relaxed); // o serviço está parando
+        }
         if last_report.elapsed() < Duration::from_millis(700) {
             return;
         }
         last_report = Instant::now();
-        let _ = db.set_job_progress(
-            job.id,
-            &format!("{} arquivos lidos pelo serviço", progress.files),
-        );
-        if db.job(job.id).ok().flatten().is_some_and(|current| current.state == "cancel") {
+        let _ = link.set_job_progress(job.id, &format!("{} arquivos lidos pelo serviço", progress.files));
+        if link.job(job.id).ok().flatten().is_some_and(|current| current.state == "cancel") {
             cancel.store(true, Ordering::Relaxed);
         }
     };
@@ -145,7 +208,7 @@ fn run_job(db: &Db, db_path: &Path, job: Job) {
     match scan::scan_source(&mut scan_db, job.source_id, &root, &options, &cancel, &mut report) {
         Ok(Outcome::Done(progress)) => {
             if let Some(position) = start_position {
-                let _ = db.set_setting(&position_key(job.source_id), &follow::encode(position));
+                let _ = scan_db.set_setting(&position_key(job.source_id), &follow::encode(position));
             }
             finish("done", &format!("Pronto: {} arquivos catalogados pelo serviço.", progress.files));
         }
@@ -162,6 +225,7 @@ mod follow {
     use crate::db::Db;
     use crate::fast::{drive_letter_of_root, strip_device_prefix};
     use crate::kind::{classify, has_hidden_or_system_attr};
+    use crate::log;
     use crate::scan::unix_seconds;
     use crate::settings::Settings;
     use crate::watch::{attributes, in_system_dir};
@@ -193,6 +257,8 @@ mod follow {
         source_id: i64,
         root: PathBuf,
         journal: Journal,
+        /// Pastas renomeadas: número no NTFS -> caminho antigo, entre o registro do nome antigo e o do novo.
+        old_dir_names: HashMap<i64, String>,
     }
 
     #[derive(Default)]
@@ -226,10 +292,12 @@ mod follow {
                 let options = JournalOptions { next_usn: NextUsn::Custom(saved), ..JournalOptions::default() };
                 match Journal::new(volume, options) {
                     Ok(journal) => {
-                        self.active.insert(source.id, Follower { source_id: source.id, root, journal });
+                        log::write(&format!("acompanhando o diário USN de {}", root.display()));
+                        self.active.insert(source.id, Follower { source_id: source.id, root, journal, old_dir_names: HashMap::new() });
                     }
-                    Err(_) => {
+                    Err(error) => {
                         // Diário recriado ou posição perdida: não dá para saber o que mudou.
+                        log::write(&format!("diário USN de {} perdido ({error}): vale varrer de novo", root.display()));
                         let _ = db.set_setting(&position_key(source.id), "");
                         let _ = db.set_setting(&format!("usn_lost:{}", source.id), "1");
                     }
@@ -242,10 +310,17 @@ mod follow {
             for follower in self.active.values_mut() {
                 for _ in 0..50 {
                     let Ok(page) = follower.journal.read() else { break };
-                    for record in &page.records {
-                        let _ = apply_record(db, follower, record, skip_hidden);
+                    // Uma página inteira numa transação só: bem mais rápido e sem brigar com
+                    // quem está lendo o catálogo.
+                    if let Ok(tx) = db.conn.unchecked_transaction() {
+                        for record in &page.records {
+                            if let Err(error) = apply_record(db, follower, record, skip_hidden) {
+                                log::write(&format!("erro ao aplicar mudança do diário USN: {error}"));
+                            }
+                        }
+                        let _ = db.set_setting(&position_key(follower.source_id), &encode(follower.journal.position()));
+                        let _ = tx.commit();
                     }
-                    let _ = db.set_setting(&position_key(follower.source_id), &encode(follower.journal.position()));
                     if page.caught_up {
                         break;
                     }
@@ -255,12 +330,22 @@ mod follow {
     }
 
     /// Só os registros de fechamento (`CLOSE`) trazem o resultado final de uma operação.
-    fn apply_record(db: &Db, follower: &Follower, record: &UsnRecord, skip_hidden: bool) -> anyhow::Result<()> {
+    fn apply_record(db: &Db, follower: &mut Follower, record: &UsnRecord, skip_hidden: bool) -> anyhow::Result<()> {
+        let frn = record.file_id.as_reference().map(|reference| (reference & 0x0000_FFFF_FFFF_FFFF) as i64);
+        let is_directory = record.file_attributes & 0x10 != 0;
+
+        // O registro com o nome ANTIGO da pasta vem antes do fechamento: guarda o caminho antigo
+        // para, no fechamento, mover tudo que está dentro dela.
+        if is_directory && record.reason.contains(Reason::RENAME_OLD_NAME) {
+            if let (Some(frn), Some(old)) = (frn, follower.journal.resolve_path(record)) {
+                let old = old.to_string_lossy().into_owned();
+                follower.old_dir_names.insert(frn, strip_device_prefix(&old).to_string());
+            }
+            return Ok(());
+        }
         if !record.reason.contains(Reason::CLOSE) {
             return Ok(());
         }
-        let frn = record.file_id.as_reference().map(|reference| (reference & 0x0000_FFFF_FFFF_FFFF) as i64);
-        let is_directory = record.file_attributes & 0x10 != 0;
 
         // Apagado: sai do catálogo pelo número do arquivo, sem precisar do caminho. (Cada arquivo
         // de uma pasta apagada tem o próprio registro de exclusão.)
@@ -282,10 +367,18 @@ mod follow {
         }
         if is_directory {
             // Pasta renomeada/movida: os arquivos dentro dela mudam de caminho sem registro próprio.
-            // Marca a fonte; a conferência ao listar tira os caminhos antigos e uma nova
-            // varredura traz os novos.
+            // Troca o começo do caminho no catálogo, sem varrer nada.
             if record.reason.contains(Reason::RENAME_NEW_NAME) {
-                db.set_setting(&format!("usn_dir_moved:{}", follower.source_id), "1")?;
+                let old = frn.and_then(|frn| follower.old_dir_names.remove(&frn));
+                let new = follower.journal.resolve_path(record).map(|path| path.to_string_lossy().into_owned());
+                match (old, new) {
+                    (Some(old), Some(new)) => {
+                        let moved = db.move_dir(follower.source_id, &old, strip_device_prefix(&new))?;
+                        log::write(&format!("pasta movida: {old} -> {} ({moved} arquivos)", strip_device_prefix(&new)));
+                    }
+                    // Sem o caminho antigo não dá para saber o que mudou de lugar: marca para conferir.
+                    _ => db.set_setting(&format!("usn_dir_moved:{}", follower.source_id), "1")?,
+                }
             }
             return Ok(());
         }
@@ -351,21 +444,10 @@ mod follow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
-    fn alive_only_with_a_fresh_heartbeat() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(!is_alive(&db));
-        db.set_setting(HEARTBEAT_KEY, &now_secs().to_string()).unwrap();
-        assert!(is_alive(&db));
-        db.set_setting(HEARTBEAT_KEY, &(now_secs() - 60).to_string()).unwrap();
-        assert!(!is_alive(&db));
-        db.set_setting(HEARTBEAT_KEY, "0").unwrap();
-        assert!(!is_alive(&db));
-    }
-
-    #[test]
-    fn service_runs_a_queued_scan_job_for_a_plain_folder() {
+    fn service_runs_a_queued_scan_job_for_a_plain_folder_and_keeps_beating() {
         // Pasta comum (não é raiz de HD NTFS): o serviço varre pelo caminho normal e conclui a tarefa.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("pasta");
@@ -374,38 +456,67 @@ mod tests {
         let db_path = dir.path().join("catalogo.db");
         let db = Db::open(&db_path).unwrap();
         let source = db.add_source("pasta", &root.to_string_lossy()).unwrap();
-        let job_id = request_scan(&db, source).unwrap();
+        let link = ServiceLink::open(&db_path).unwrap();
+        let job_id = link.enqueue_job("scan", source).unwrap();
 
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread_path = db_path.clone();
         let handle = std::thread::spawn(move || run_loop(&thread_path, &thread_stop));
 
         let started = Instant::now();
         let mut state = String::new();
-        while started.elapsed() < Duration::from_secs(15) {
-            state = db.job(job_id).unwrap().unwrap().state;
+        while started.elapsed() < Duration::from_secs(20) {
+            state = link.job(job_id).unwrap().unwrap().state;
             if state == "done" || state == "failed" {
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        assert!(is_alive(&db), "o serviço devia estar dando sinal de vida");
+        assert!(link.is_alive(), "o serviço devia estar dando sinal de vida");
         stop.store(true, Ordering::Relaxed);
         handle.join().unwrap();
 
         assert_eq!(state, "done");
         assert_eq!(db.search("a.txt", None, 5).unwrap().len(), 1);
-        assert!(!is_alive(&db), "ao parar, o sinal de vida é zerado");
+        assert!(!link.is_alive(), "ao parar, o sinal de vida é zerado");
     }
 
     #[test]
-    fn job_queue_goes_in_order() {
-        let db = Db::open_in_memory().unwrap();
-        let first = db.enqueue_job("scan", 1).unwrap();
-        let second = db.enqueue_job("scan", 2).unwrap();
-        assert_eq!(db.next_queued_job().unwrap().unwrap().id, first);
-        db.set_job(first, "done", "ok").unwrap();
-        assert_eq!(db.next_queued_job().unwrap().unwrap().id, second);
+    fn heartbeat_keeps_beating_while_the_catalog_is_locked_by_a_long_write() {
+        // O defeito antigo: uma varredura longa segurava o banco e o serviço parecia morto.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("catalogo.db");
+        let writer = Db::open(&db_path).unwrap();
+        writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap(); // trava a escrita do catálogo
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread_path = db_path.clone();
+        let handle = std::thread::spawn(move || run_loop(&thread_path, &thread_stop));
+
+        let link = ServiceLink::open(&db_path).unwrap();
+        let started = Instant::now();
+        while !link.is_alive() && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(link.is_alive(), "o sinal de vida não pode depender do catálogo");
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(link.is_alive());
+        // e uma tarefa nova continua sendo aceita pelo app durante a varredura
+        link.enqueue_job("scan", 99).unwrap();
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+        writer.conn.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn sddl_lets_logged_on_users_start_and_stop_but_not_reconfigure() {
+        // IU = usuário logado: RP (iniciar) e WP (parar), sem DC (alterar configuração) nem DT/SD (apagar)
+        let interactive = SERVICE_SDDL.split(";;;IU").next().unwrap().rsplit('(').next().unwrap();
+        assert!(interactive.contains("RP") && interactive.contains("WP"), "{interactive}");
+        assert!(!interactive.contains("DC") && !interactive.contains("SD"), "{interactive}");
+        assert!(SERVICE_SDDL.starts_with("D:"));
     }
 }
