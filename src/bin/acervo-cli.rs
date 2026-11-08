@@ -19,6 +19,10 @@ fn main() -> Result<()> {
             println!("{}", acervo::version::describe());
             Ok(())
         }
+        // Teste real do sistema de atualização: finge ser a versão <atual> e olha o GitHub.
+        // Com "baixar", também baixa o instalador e confere o SHA-256 (sem instalar nada).
+        ["update-check", current] => update_check(current, false),
+        ["update-check", current, "baixar"] => update_check(current, true),
         ["stats"] => stats(),
         ["thumbs-report"] => thumbs_report(),
         ["thumbs-generate"] => thumbs_generate(),
@@ -113,6 +117,39 @@ fn thumbs_bench(kind: &str, count: usize, threads: usize) -> Result<()> {
         made.load(Ordering::Relaxed),
         none.load(Ordering::Relaxed)
     );
+    Ok(())
+}
+
+fn update_check(current: &str, download: bool) -> Result<()> {
+    use acervo::update;
+    let Some(release) = update::check_latest(update::REPO, current)? else {
+        println!("Nenhuma versão mais nova que {current}.");
+        return Ok(());
+    };
+    println!("Versão nova: {} ({} bytes)  {}", release.version, release.installer_size, release.page_url);
+    println!("Instalador:  {}", release.installer_url);
+    if download {
+        let dir = std::env::temp_dir().join("Acervo-teste-atualizacao");
+        let started = std::time::Instant::now();
+        let last = std::sync::atomic::AtomicU64::new(0);
+        let path = update::download(
+            &release,
+            &dir,
+            &|done, total| {
+                let step = done / (8 * 1024 * 1024);
+                if step != last.swap(step, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("  {} de {} MB", done / 1_048_576, total / 1_048_576);
+                }
+            },
+            &AtomicBool::new(false),
+        )?;
+        println!(
+            "Baixado e conferido (SHA-256 ok) em {:.1?}: {} ({} bytes)",
+            started.elapsed(),
+            path.display(),
+            std::fs::metadata(&path)?.len()
+        );
+    }
     Ok(())
 }
 
