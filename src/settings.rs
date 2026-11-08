@@ -41,6 +41,9 @@ pub struct Settings {
     pub autolock_minutes: u32,
     /// Gerar miniaturas sozinho depois de cada varredura.
     pub auto_thumbs: bool,
+    /// Procurar versões novas no GitHub sozinho (ao abrir e a cada poucas horas). Nada é baixado
+    /// sem o usuário pedir.
+    pub update_check: bool,
     pub admin_mode: AdminMode,
     pub vault_container: Option<PathBuf>,
     pub vault_letter: char,
@@ -52,6 +55,7 @@ impl Default for Settings {
             threads: 2,
             skip_hidden: true,
             auto_thumbs: true,
+            update_check: true,
             admin_mode: AdminMode::Prompt,
             autolock_minutes: 5,
             vault_container: None,
@@ -67,6 +71,7 @@ impl Settings {
             threads: read(db, "threads")?.unwrap_or(defaults.threads).clamp(1, 16),
             skip_hidden: read(db, "skip_hidden")?.unwrap_or(defaults.skip_hidden),
             auto_thumbs: read(db, "auto_thumbs")?.unwrap_or(defaults.auto_thumbs),
+            update_check: read(db, "update_check")?.unwrap_or(defaults.update_check),
             admin_mode: db
                 .get_setting("admin_mode")?
                 .map(|text| AdminMode::parse(&text))
@@ -95,6 +100,7 @@ impl Settings {
         db.set_setting("threads", &self.threads.to_string())?;
         db.set_setting("skip_hidden", &self.skip_hidden.to_string())?;
         db.set_setting("auto_thumbs", &self.auto_thumbs.to_string())?;
+        db.set_setting("update_check", &self.update_check.to_string())?;
         db.set_setting("admin_mode", self.admin_mode.as_str())?;
         db.set_setting("autolock_minutes", &self.autolock_minutes.to_string())?;
         db.set_setting("vault_letter", &self.vault_letter.to_string())?;
@@ -126,6 +132,7 @@ mod tests {
             threads: 4,
             skip_hidden: false,
             auto_thumbs: false,
+            update_check: false,
             admin_mode: AdminMode::Service,
             autolock_minutes: 10,
             vault_container: Some(PathBuf::from("E:\\cofre.hc")),

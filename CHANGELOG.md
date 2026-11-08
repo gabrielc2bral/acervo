@@ -12,6 +12,19 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
 2. anote aqui o que mudou;
 3. gere o instalador (`scripts\build-release.ps1`) e marque a versão no git (`git tag vX.Y.Z`).
 
+## [1.2.0] - 2026-11-07
+
+### Novo
+- **Atualização pelo GitHub Releases.** O Acervo procura o último release ao abrir e a cada 6 horas
+  e, se houver versão mais nova, mostra uma faixa na tela Início (Atualizar agora, Ver novidades,
+  Ignorar esta versão). Nada é baixado nem instalado sem o clique. O instalador baixado só é aberto
+  depois de conferir o SHA-256 do release; só endereços https do GitHub são aceitos.
+- A verificação automática pode ser desligada em Configurações > Atualizações (também há o botão
+  "Verificar agora").
+- O instalador ganhou o modo `--update` (sem janela): atualiza no mesmo lugar, mantém atalhos e
+  configurações (inclusive a escolha de usar o serviço) e reabre o Acervo. Instalar de novo por cima
+  também atualiza na pasta onde já estava.
+
 ## [1.1.0] - 2026-11-07
 
 ### Novo

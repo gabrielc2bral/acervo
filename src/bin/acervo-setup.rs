@@ -44,6 +44,8 @@ mod windows_main {
         desktop_shortcut: bool,
         start_menu_shortcut: bool,
         remove_catalog: bool,
+        /// Atualização sobre uma instalação existente: não mexe nas configurações do usuário.
+        update: bool,
         appdata: PathBuf,
         desktop_dir: PathBuf,
         programs_dir: PathBuf,
@@ -59,6 +61,14 @@ mod windows_main {
         fn start_menu_link(&self) -> PathBuf {
             self.programs_dir.join("Acervo.lnk")
         }
+    }
+
+    /// Pasta onde o Acervo já está instalado, se estiver (o registro do Windows guarda).
+    fn installed_dir() -> Option<PathBuf> {
+        use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+        let key = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(UNINSTALL_KEY).ok()?;
+        let dir: String = key.get_value("InstallLocation").ok()?;
+        (!dir.is_empty()).then(|| PathBuf::from(dir))
     }
 
     fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -139,7 +149,12 @@ mod windows_main {
 
         report("Preparando o catálogo...");
         let db_path = options.db_path();
-        Db::open(&db_path)?.set_setting("admin_mode", "service")?;
+        let catalog = Db::open(&db_path)?;
+        if !options.update {
+            // Instalação nova: já usa o serviço. Numa atualização, a escolha do usuário fica como está.
+            catalog.set_setting("admin_mode", "service")?;
+        }
+        drop(catalog);
 
         report("Instalando o serviço do Windows...");
         let status = quiet(
@@ -269,6 +284,8 @@ mod windows_main {
             return test_extract(Path::new(dir));
         }
         let uninstall_mode = args.iter().any(|a| a == "--uninstall");
+        // --update: atualização sem janela, sobre a instalação existente (usado pelo próprio Acervo).
+        let update_mode = args.iter().any(|a| a == "--update");
 
         // Sem administrador: descobre as pastas do usuário e se reabre pedindo a permissão.
         if !is_admin() && !args.iter().any(|a| a == "--elevated") {
@@ -287,6 +304,9 @@ mod windows_main {
             if uninstall_mode {
                 forward.push("--uninstall".to_string());
             }
+            if update_mode {
+                forward.push("--update".to_string());
+            }
             let _ = fast::run_elevated(&std::env::current_exe()?, &forward);
             return Ok(());
         }
@@ -300,6 +320,8 @@ mod windows_main {
         };
         let default_dir = if uninstall_mode {
             std::env::current_exe()?.parent().map(Path::to_path_buf).unwrap_or_default()
+        } else if let Some(existing) = installed_dir().filter(|dir| dir.is_dir()) {
+            existing // já instalado: instalar de novo atualiza no mesmo lugar
         } else {
             PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into())).join("Acervo")
         };
@@ -308,10 +330,33 @@ mod windows_main {
             desktop_shortcut: true,
             start_menu_shortcut: true,
             remove_catalog: false,
+            update: update_mode,
             appdata: path_arg("--appdata", std::env::var_os("APPDATA").map(PathBuf::from)),
             desktop_dir: path_arg("--desktop", known_folder("Desktop")),
             programs_dir: path_arg("--programs", known_folder("Programs")),
         };
+
+        if update_mode {
+            // Sem janela: atualiza no mesmo lugar, mantém os atalhos que já existem e reabre o app.
+            let mut options = base.clone();
+            options.desktop_shortcut = false;
+            options.start_menu_shortcut = false;
+            return match install(&options, &|_| {}) {
+                Ok(()) => {
+                    let _ = Command::new("explorer").arg(options.dir.join("acervo.exe")).spawn();
+                    Ok(())
+                }
+                Err(error) => {
+                    rfd::MessageDialog::new()
+                        .set_title("Atualização do Acervo")
+                        .set_description(format!("Não foi possível atualizar o Acervo:\n\n{error}"))
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_buttons(rfd::MessageButtons::Ok)
+                        .show();
+                    Err(error)
+                }
+            };
+        }
 
         let ui = SetupWindow::new()?;
         ui.set_uninstall_mode(uninstall_mode);

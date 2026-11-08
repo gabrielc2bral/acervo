@@ -36,6 +36,8 @@ Requisitos: Windows 10 ou 11, 64 bits. Para o Cofre, o [VeraCrypt](https://verac
 
 **Backup.** Em Configurações, "Fazer backup" gera um único arquivo `.acervo-backup` com fontes, arquivos catalogados, miniaturas e configurações. É para guardar antes de formatar o PC. Depois de reinstalar, "Restaurar backup" traz tudo de volta (e guarda antes uma cópia do catálogo que estava lá).
 
+**Atualizações.** O Acervo olha os releases deste repositório ao abrir e a cada 6 horas. Se houver versão mais nova, aparece uma faixa na tela Início; o clique em "Atualizar agora" baixa o instalador, confere o SHA-256 publicado no release e abre o instalador, que atualiza no mesmo lugar e mantém seus dados. Não baixa nada sozinho, só aceita endereços https do GitHub, e dá para desligar em Configurações.
+
 ## O serviço do Windows
 
 A leitura da MFT e do diário USN precisa de administrador. Para o programa não pedir permissão a cada varredura, o instalador registra um serviço (`AcervoService`, conta do sistema) que faz esse trabalho e conversa com o programa por uma tabela no próprio catálogo. Ele só lê nomes e tamanhos e grava no seu catálogo.

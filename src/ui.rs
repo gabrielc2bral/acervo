@@ -12,7 +12,7 @@ use acervo::{
     settings::{AdminMode, Settings},
     steam,
     thumbs::{self, Mode},
-    vault,
+    update, vault,
 };
 use anyhow::Result;
 use slint::{Color, ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
@@ -561,6 +561,7 @@ pub fn run() -> Result<()> {
                 threads: ui.get_set_threads().round() as usize,
                 skip_hidden: ui.get_set_skip_hidden(),
                 auto_thumbs: ui.get_set_auto_thumbs(),
+                update_check: ui.get_set_update_check(),
                 admin_mode: admin_mode_from_label(ui.get_set_admin_mode().as_str()),
                 autolock_minutes: ui.get_set_autolock().round() as u32,
                 vault_letter: ui.get_set_letter().chars().next().unwrap_or('V'),
@@ -578,6 +579,56 @@ pub fn run() -> Result<()> {
                     }
                 },
             );
+        }
+    });
+
+    // ---- Atualizações pelo GitHub Releases
+    ui.on_check_updates({
+        let (weak, app) = (weak.clone(), app.clone());
+        move || check_updates(&weak, app.db_path.clone(), true)
+    });
+    ui.on_install_update({
+        let (weak, app) = (weak.clone(), app.clone());
+        move || start_update(&weak, &app)
+    });
+    ui.on_skip_update({
+        let (weak, app) = (weak.clone(), app.clone());
+        move || {
+            let Some(release) = UPDATE.with(|cell| cell.borrow().clone()) else { return };
+            if let Some(ui) = weak.upgrade() {
+                ui.set_update_available(false);
+            }
+            let db_path = app.db_path.clone();
+            background(
+                &weak,
+                move || Db::open(&db_path).and_then(|db| db.set_setting("update_skip", &release.version)),
+                |_, _: Result<()>| {},
+            );
+        }
+    });
+    ui.on_open_release_page(|| {
+        if let Some(release) = UPDATE.with(|cell| cell.borrow().clone()) {
+            if update::is_allowed_url(&release.page_url) {
+                let _ = Command::new("explorer").arg(&release.page_url).spawn();
+            }
+        }
+    });
+    // Procura ao abrir (depois de 10 s, para não competir com a abertura) e a cada 6 horas.
+    let update_timer = Timer::default();
+    update_timer.start(TimerMode::Repeated, Duration::from_secs(6 * 3600), {
+        let (weak, app) = (weak.clone(), app.clone());
+        move || {
+            if app.settings.borrow().update_check {
+                check_updates(&weak, app.db_path.clone(), false);
+            }
+        }
+    });
+    Timer::single_shot(Duration::from_secs(10), {
+        let (weak, app) = (weak.clone(), app.clone());
+        move || {
+            if app.settings.borrow().update_check {
+                check_updates(&weak, app.db_path.clone(), false);
+            }
         }
     });
 
@@ -787,6 +838,142 @@ fn confirm(title: &str, description: String) -> bool {
         .set_buttons(rfd::MessageButtons::YesNo)
         .show()
         == rfd::MessageDialogResult::Yes
+}
+
+// ---------------------------------------------------------------- Atualizações
+
+thread_local! {
+    /// A versão nova encontrada, à espera do clique em "Atualizar agora".
+    static UPDATE: RefCell<Option<update::Release>> = const { RefCell::new(None) };
+}
+
+/// Resumo das notas do release para a faixa de aviso: as duas primeiras linhas com texto.
+fn summarize_notes(notes: &str) -> String {
+    let lines: Vec<&str> = notes
+        .lines()
+        .map(|line| line.trim().trim_start_matches(['#', '-', '*']).trim())
+        .filter(|line| !line.is_empty())
+        .take(2)
+        .collect();
+    let text = lines.join(" · ");
+    if text.chars().count() > 150 {
+        format!("{}...", text.chars().take(150).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// Procura uma versão nova no GitHub, em segundo plano. `manual`: veio do botão "Verificar agora",
+/// então diz também quando não há nada de novo ou quando deu erro (a verificação automática é
+/// silenciosa e respeita "Ignorar esta versão").
+fn check_updates(weak: &Weak<MainWindow>, db_path: PathBuf, manual: bool) {
+    if manual {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_update_status("Procurando...".into());
+        }
+    }
+    background(
+        weak,
+        move || {
+            let skipped = Db::open(&db_path)
+                .ok()
+                .and_then(|db| db.get_setting("update_skip").ok().flatten());
+            update::check_latest(update::REPO, acervo::version::VERSION).map(|release| (release, skipped))
+        },
+        move |ui: &MainWindow, result: Result<(Option<update::Release>, Option<String>)>| match result {
+            Ok((Some(release), skipped)) => {
+                if !manual && skipped.as_deref() == Some(release.version.as_str()) {
+                    return;
+                }
+                ui.set_update_title(
+                    format!("Acervo {} disponível (você está na {})", release.version, acervo::version::VERSION).into(),
+                );
+                ui.set_update_notes(summarize_notes(&release.notes).into());
+                ui.set_update_available(true);
+                if manual {
+                    ui.set_update_status(format!("Versão {} disponível (veja na tela Início).", release.version).into());
+                }
+                UPDATE.with(|cell| *cell.borrow_mut() = Some(release));
+            }
+            Ok((None, _)) => {
+                ui.set_update_available(false);
+                if manual {
+                    ui.set_update_status(
+                        format!("Você já está na versão mais recente ({}).", acervo::version::VERSION).into(),
+                    );
+                }
+            }
+            Err(error) => {
+                if manual {
+                    ui.set_update_status(error.to_string().into());
+                }
+            }
+        },
+    );
+}
+
+/// "Atualizar agora": baixa o instalador, confere o SHA-256 e abre o instalador no modo de atualização.
+fn start_update(weak: &Weak<MainWindow>, app: &Rc<App>) {
+    let Some(ui) = weak.upgrade() else { return };
+    let Some(release) = UPDATE.with(|cell| cell.borrow().clone()) else { return };
+    if ui.get_scanning() {
+        ui.set_status("Espere a operação em andamento terminar para atualizar.".into());
+        return;
+    }
+    if !confirm(
+        "Atualizar o Acervo",
+        format!(
+            "Baixar e instalar o Acervo {}?\n\nO instalador confere o arquivo (SHA-256), o Windows pede a permissão de administrador, o Acervo fecha e reabre sozinho. Seu catálogo, suas configurações e seus atalhos são mantidos.",
+            release.version
+        ),
+    ) {
+        return;
+    }
+    // O instalador fecha o programa à força: o Cofre precisa ser desmontado antes.
+    if ui.get_vault_unlocked() {
+        let letter = app.settings.borrow().vault_letter;
+        if vault::dismount(letter).is_err() {
+            ui.set_status("Não consegui bloquear o Cofre. Bloqueie-o e tente atualizar de novo.".into());
+            return;
+        }
+        ui.set_vault_unlocked(false);
+        ui.set_vault_results(ModelRc::new(VecModel::default()));
+    }
+
+    ui.set_scanning(true);
+    ui.set_status("Baixando a atualização...".into());
+    app.cancel.store(false, Ordering::Relaxed);
+    let cancel = app.cancel.clone();
+    let progress_weak = weak.clone();
+    background(
+        weak,
+        move || {
+            let dir = std::env::temp_dir().join("Acervo-atualizacao");
+            update::download(
+                &release,
+                &dir,
+                &|done, total| {
+                    set_status_later(
+                        &progress_weak,
+                        format!("Baixando a atualização... {} de {}", human_size(done), human_size(total)),
+                    )
+                },
+                &cancel,
+            )
+        },
+        |ui: &MainWindow, result: Result<PathBuf>| {
+            ui.set_scanning(false);
+            match result {
+                Ok(installer) => match Command::new(&installer).arg("--update").spawn() {
+                    Ok(_) => ui.set_status(
+                        "Download conferido. Aceite o pedido de permissão do Windows: o Acervo fecha e reabre sozinho.".into(),
+                    ),
+                    Err(error) => ui.set_status(format!("Não foi possível abrir o instalador: {error}").into()),
+                },
+                Err(error) => ui.set_status(format!("Não foi possível atualizar: {error}").into()),
+            }
+        },
+    );
 }
 
 /// Abre o Explorer com o arquivo selecionado. O Explorer exige `/select,"caminho"` com aspas só
@@ -1896,6 +2083,7 @@ fn show_settings(ui: &MainWindow, settings: &Settings) {
     ui.set_set_threads(settings.threads as f32);
     ui.set_set_skip_hidden(settings.skip_hidden);
     ui.set_set_auto_thumbs(settings.auto_thumbs);
+    ui.set_set_update_check(settings.update_check);
     ui.set_set_autolock(settings.autolock_minutes as f32);
     ui.set_set_letter(settings.vault_letter.to_string().into());
     ui.set_vault_configured(settings.vault_container.is_some());

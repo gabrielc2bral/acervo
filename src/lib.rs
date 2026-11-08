@@ -11,6 +11,7 @@ pub mod service;
 pub mod settings;
 pub mod steam;
 pub mod thumbs;
+pub mod update;
 pub mod vault;
 pub mod version;
 pub mod watch;

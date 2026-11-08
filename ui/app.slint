@@ -434,6 +434,12 @@ export component MainWindow inherits Window {
     in-out property <bool> set-auto-thumbs: true;
     in property <string> app-version;
     in property <bool> uninstall-available;
+    // Atualizações (GitHub Releases)
+    in property <bool> update-available;
+    in property <string> update-title;
+    in property <string> update-notes;
+    in property <string> update-status;
+    in-out property <bool> set-update-check: true;
     in-out property <string> set-admin-mode: "Perguntar a cada vez (permissão do Windows)";
     in property <string> service-status: "Serviço do Windows: verificando...";
     in-out property <float> set-autolock: 5;
@@ -472,6 +478,10 @@ export component MainWindow inherits Window {
     callback settings-changed();
     callback install-service();
     callback uninstall-service();
+    callback check-updates();
+    callback install-update();
+    callback skip-update();
+    callback open-release-page();
     callback backup-create();
     callback backup-restore();
     callback uninstall-app();
@@ -518,6 +528,25 @@ export component MainWindow inherits Window {
                 padding: 24px;
                 spacing: 16px;
 
+                if root.update-available : Card {
+                    height: 96px;
+                    background: #1f3a4d;
+                    border-color: #60cdff;
+                    HorizontalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text { text: root.update-title; color: #ffffff; font-size: 16px; font-weight: 700; }
+                            Text { text: root.update-notes; color: #c8c8c8; font-size: 12px; overflow: elide; }
+                        }
+                        Button { text: "Ver novidades"; clicked => { root.open-release-page(); } }
+                        Button { text: "Ignorar esta versão"; enabled: !root.scanning; clicked => { root.skip-update(); } }
+                        Button { text: "Atualizar agora"; primary: true; enabled: !root.scanning; clicked => { root.install-update(); } }
+                    }
+                }
                 PageTitle { text: "Início"; }
                 Hint { text: root.status == "" ? "Resumo de tudo que você já catalogou" : root.status; }
                 HorizontalLayout {
@@ -1085,6 +1114,26 @@ export component MainWindow inherits Window {
                             }
                         }
                         Hint { text: root.vault-configured ? "Volume: " + root.vault-container : "Nenhum volume escolhido ainda (use a tela Cofre)."; }
+                    }
+                }
+                Card {
+                    height: 170px;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+                        Text { text: "Atualizações"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                        Switch {
+                            text: "Procurar versões novas no GitHub automaticamente";
+                            checked <=> root.set-update-check;
+                            toggled => { root.settings-changed(); }
+                        }
+                        Hint { text: "Só procura e avisa. Nada é baixado nem instalado sem você clicar em \"Atualizar agora\"."; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            Button { text: "Verificar agora"; clicked => { root.check-updates(); } }
+                            Text { text: root.update-status; color: #60cdff; font-size: 13px; vertical-alignment: center; }
+                        }
                     }
                 }
                 Card {

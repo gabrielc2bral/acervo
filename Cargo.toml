@@ -1,6 +1,6 @@
 [package]
 name = "acervo"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Catálogo rápido e leve de arquivos, HDs e jogos, feito para Windows"
 
@@ -14,6 +14,9 @@ trash = "5"
 ntfs-reader = "0.6.0"
 notify = "8"
 flate2 = "1"
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"
+sha2 = "0.10"
 memchr = "2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 
