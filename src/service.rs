@@ -62,6 +62,38 @@ pub fn installed_state() -> Installed {
     }
 }
 
+/// Se o serviço está instalado mas parado (por exemplo, fechado pelo ícone da bandeja), inicia.
+/// Quem está logado tem permissão de iniciar (ver `SERVICE_SDDL`). Devolve `true` se mandou iniciar.
+#[cfg(windows)]
+pub fn start_if_stopped() -> bool {
+    use windows_service::service::ServiceAccess;
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    if installed_state() != Installed::Stopped {
+        return false;
+    }
+    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else {
+        return false;
+    };
+    let Ok(service) = manager.open_service(SERVICE_NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS) else {
+        return false;
+    };
+    match service.start::<&str>(&[]) {
+        Ok(()) => {
+            log::write("o Acervo foi aberto: iniciando o serviço que estava parado");
+            true
+        }
+        Err(error) => {
+            log::write(&format!("não foi possível iniciar o serviço ao abrir o Acervo: {error}"));
+            false
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn start_if_stopped() -> bool {
+    false
+}
+
 /// Pede uma varredura rápida ao serviço e devolve o id da tarefa.
 pub fn request_scan(catalog_path: &Path, source_id: i64) -> Result<i64> {
     ServiceLink::open(catalog_path)?.enqueue_job("scan", source_id)

@@ -19,6 +19,9 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
   distro x86_64 sem instalar. Também há o instalador `scripts/install-linux.sh` (sem sudo, confere o
   SHA-256) e o README explica a instalação e as bibliotecas por distro.
 
+- Ao abrir o Acervo, se o serviço estiver parado (por exemplo, fechado pelo ícone da bandeja), ele
+  é iniciado de novo. Não acontece se você escolheu "nunca usar administrador".
+
 ### Corrigido
 - No Linux o programa não abria: exigia a variável `APPDATA`. Agora usa `~/.local/share/Acervo`.
 

@@ -255,6 +255,16 @@ pub fn run() -> Result<()> {
     // Abre rápido: usa o índice salvo em disco quando o catálogo não mudou desde que foi salvo.
     app.index.load_or_build(db_path.clone(), true);
     load_games(&weak, &app, 0);
+    // Se o serviço foi fechado pelo ícone da bandeja, abrir o Acervo liga ele de novo
+    // (a não ser que o usuário tenha escolhido nunca usar administrador).
+    if !matches!(app.settings.borrow().admin_mode, AdminMode::Never) {
+        let status_db = db_path.clone();
+        background(
+            &weak,
+            service::start_if_stopped,
+            move |ui, _| refresh_service_status(&ui.as_weak(), &status_db),
+        );
+    }
     refresh_service_status(&weak, &db_path);
     // Catálogos gravados por versões antigas ganham as regras novas sem precisar varrer de novo.
     let reclassify_db = db_path.clone();
