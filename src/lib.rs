@@ -1,5 +1,6 @@
 //! Acervo: catálogo de arquivos que continua pesquisável com os HDs desconectados.
 
+pub mod backup;
 pub mod db;
 pub mod dedupe;
 pub mod fast;

@@ -1,0 +1,21 @@
+name: CI
+
+# A cada envio e a cada pull request: compila e roda os testes no Windows.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Testes
+        run: cargo test --locked

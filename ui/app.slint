@@ -433,6 +433,7 @@ export component MainWindow inherits Window {
     in-out property <bool> set-skip-hidden: true;
     in-out property <bool> set-auto-thumbs: true;
     in property <string> app-version;
+    in property <bool> uninstall-available;
     in-out property <string> set-admin-mode: "Perguntar a cada vez (permissão do Windows)";
     in property <string> service-status: "Serviço do Windows: verificando...";
     in-out property <float> set-autolock: 5;
@@ -471,6 +472,9 @@ export component MainWindow inherits Window {
     callback settings-changed();
     callback install-service();
     callback uninstall-service();
+    callback backup-create();
+    callback backup-restore();
+    callback uninstall-app();
 
     function go(target: int) {
         root.page = target;
@@ -725,7 +729,7 @@ export component MainWindow inherits Window {
                     text: root.games.length + " itens · " + (root.games-tab == 0
                         ? "Jogos da Steam lidos dos arquivos dela (sem login), com a capa que a Steam já guardou. Bibliotecas em HD desconectado não aparecem."
                         : root.games-tab == 1
-                        ? "Instaladores encontrados no catálogo (setup, install...)."
+                        ? "Instaladores encontrados no catálogo (setup, install...). Aparecem os 300 primeiros; use a busca para achar os outros."
                         : "Pastas de repack (FitGirl e outras) encontradas no catálogo.");
                 }
                 GameGrid {
@@ -1081,6 +1085,24 @@ export component MainWindow inherits Window {
                             }
                         }
                         Hint { text: root.vault-configured ? "Volume: " + root.vault-container : "Nenhum volume escolhido ainda (use a tela Cofre)."; }
+                    }
+                }
+                Card {
+                    height: 215px;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+                        Text { text: "Backup e desinstalação"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                        Hint { text: "Antes de formatar o PC: faça o backup e guarde o arquivo fora dele (pendrive, nuvem). Ele leva as fontes, os arquivos catalogados, as miniaturas e as configurações. Depois de reinstalar o Acervo, use Restaurar. O catálogo do Cofre fica dentro do volume VeraCrypt: guarde o volume à parte."; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button { text: "Fazer backup..."; primary: true; enabled: !root.scanning; clicked => { root.backup-create(); } }
+                            Button { text: "Restaurar backup..."; enabled: !root.scanning; clicked => { root.backup-restore(); } }
+                            Rectangle { width: 24px; }
+                            Button { text: "Desinstalar o Acervo..."; enabled: root.uninstall-available && !root.scanning; clicked => { root.uninstall-app(); } }
+                        }
+                        Hint { text: root.status; }
                     }
                 }
                 Hint { text: root.app-version; }

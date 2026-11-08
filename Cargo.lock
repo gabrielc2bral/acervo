@@ -128,9 +128,10 @@ dependencies = [
 
 [[package]]
 name = "acervo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "image",
  "jwalk",
  "memchr",

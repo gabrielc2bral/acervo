@@ -3,6 +3,7 @@
 //! não travar.
 
 use acervo::{
+    backup,
     db::{Db, FileRow, SearchQuery, Sort},
     dedupe, fast,
     index::{Index, NewEntry},
@@ -18,6 +19,7 @@ use slint::{Color, ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -54,6 +56,11 @@ struct IndexHandle {
     polling: Arc<AtomicBool>,
     /// Desde quando há mudanças aplicadas que ainda não foram salvas em disco.
     unsaved_since: Arc<Mutex<Option<Instant>>>,
+    /// Há mudanças que a tela ainda não foi avisada, e quando foi o último aviso. Num disco com
+    /// muita escrita (jogo atualizando, cópia grande) a tela seria refeita toda hora: os avisos
+    /// são juntados em no máximo um a cada 3 segundos.
+    pending_notify: Arc<AtomicBool>,
+    last_notify: Arc<Mutex<Option<Instant>>>,
 }
 
 impl IndexHandle {
@@ -123,9 +130,20 @@ impl IndexHandle {
             let changed = handle.apply_changes(&db_path).unwrap_or(0);
             if changed == 0 {
                 handle.save_if_idle(&db_path);
+            } else {
+                handle.pending_notify.store(true, Ordering::SeqCst);
             }
+            let notify_now = handle.pending_notify.load(Ordering::SeqCst)
+                && handle
+                    .last_notify
+                    .lock()
+                    .map_or(true, |last| last.is_none_or(|at| at.elapsed() > Duration::from_secs(3)));
             handle.polling.store(false, Ordering::SeqCst);
-            if changed > 0 {
+            if notify_now {
+                handle.pending_notify.store(false, Ordering::SeqCst);
+                if let Ok(mut last) = handle.last_notify.lock() {
+                    *last = Some(Instant::now());
+                }
                 on_changed(changed);
             }
         });
@@ -404,14 +422,30 @@ pub fn run() -> Result<()> {
             if !confirmed {
                 return;
             }
-            match Db::open(&app.db_path).and_then(|db| db.remove_source(id as i64)) {
-                Ok(()) => {
-                    let _ = refresh_sources(&ui, &app.db_path);
-                    refresh_stats(&weak, &app.db_path);
-                    app.index.rebuild(app.db_path.clone());
-                }
-                Err(error) => ui.set_status(format!("Erro ao remover: {error}").into()),
-            }
+            // Apagar centenas de milhares de linhas leva alguns segundos: em segundo plano.
+            ui.set_scanning(true);
+            ui.set_status("Removendo a fonte do catálogo...".into());
+            let db_path = app.db_path.clone();
+            let index = app.index.clone();
+            background(
+                &weak,
+                {
+                    let db_path = db_path.clone();
+                    move || Db::open(&db_path).and_then(|db| db.remove_source(id as i64))
+                },
+                move |ui: &MainWindow, result: Result<()>| {
+                    ui.set_scanning(false);
+                    match result {
+                        Ok(()) => {
+                            ui.set_status("Fonte removida do catálogo.".into());
+                            let _ = refresh_sources(ui, &db_path);
+                            refresh_stats(&ui.as_weak(), &db_path);
+                            index.rebuild(db_path);
+                        }
+                        Err(error) => ui.set_status(format!("Erro ao remover: {error}").into()),
+                    }
+                },
+            );
         }
     });
 
@@ -532,10 +566,160 @@ pub fn run() -> Result<()> {
                 vault_letter: ui.get_set_letter().chars().next().unwrap_or('V'),
                 vault_container: app.settings.borrow().vault_container.clone(),
             };
-            match Db::open(&app.db_path).and_then(|db| updated.save(&db)) {
-                Ok(()) => *app.settings.borrow_mut() = updated,
-                Err(error) => ui.set_status(format!("Erro ao salvar: {error}").into()),
+            // Vale na hora; gravar no banco (que pode estar ocupado com uma varredura) é em segundo plano.
+            *app.settings.borrow_mut() = updated.clone();
+            let db_path = app.db_path.clone();
+            background(
+                &weak,
+                move || Db::open(&db_path).and_then(|db| updated.save(&db)),
+                |ui, result: Result<()>| {
+                    if let Err(error) = result {
+                        ui.set_status(format!("Erro ao salvar: {error}").into());
+                    }
+                },
+            );
+        }
+    });
+
+    // ---- Backup, restauração e desinstalação (Configurações)
+    let uninstaller = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("uninstall.exe")))
+        .filter(|path| path.is_file());
+    ui.set_uninstall_available(uninstaller.is_some());
+
+    ui.on_backup_create({
+        let (weak, app) = (weak.clone(), app.clone());
+        move || {
+            app.touch();
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_scanning() {
+                ui.set_status("Espere a operação em andamento terminar para fazer o backup.".into());
+                return;
             }
+            let suggestion = format!("acervo-backup-{}.{}", iso_date_today(), backup::EXTENSION);
+            let Some(destination) = rfd::FileDialog::new()
+                .set_title("Salvar o backup do Acervo")
+                .set_file_name(&suggestion)
+                .add_filter("Backup do Acervo", &[backup::EXTENSION])
+                .save_file()
+            else {
+                return;
+            };
+            ui.set_scanning(true);
+            ui.set_status("Criando o backup...".into());
+            let db_path = app.db_path.clone();
+            let progress_weak = weak.clone();
+            background(
+                &weak,
+                move || {
+                    backup::create(&db_path, &destination, &|text| set_status_later(&progress_weak, text.to_string()))
+                        .map(|summary| (summary, destination))
+                },
+                |ui, result: Result<(backup::Summary, PathBuf)>| {
+                    ui.set_scanning(false);
+                    let text = match result {
+                        Ok((summary, destination)) => format!(
+                            "Backup salvo em {} ({} arquivos, {} fontes, {} miniaturas). Guarde esse arquivo fora deste PC antes de formatar.",
+                            destination.display(),
+                            thousands(summary.files),
+                            summary.sources,
+                            thousands(summary.thumbnails)
+                        ),
+                        Err(error) => format!("Erro ao criar o backup: {error}"),
+                    };
+                    ui.set_status(text.into());
+                },
+            );
+        }
+    });
+
+    ui.on_backup_restore({
+        let (weak, app) = (weak.clone(), app.clone());
+        move || {
+            app.touch();
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_scanning() {
+                ui.set_status("Espere a operação em andamento terminar para restaurar.".into());
+                return;
+            }
+            let Some(file) = rfd::FileDialog::new()
+                .set_title("Escolha o backup do Acervo")
+                .add_filter("Backup do Acervo", &[backup::EXTENSION])
+                .pick_file()
+            else {
+                return;
+            };
+            let description = match backup::describe(&file) {
+                Ok(text) => text,
+                Err(error) => {
+                    ui.set_status(format!("{error}").into());
+                    return;
+                }
+            };
+            if !confirm(
+                "Restaurar backup",
+                format!(
+                    "Restaurar este backup?\n\n{description}\n\nO catálogo e as configurações de agora serão SUBSTITUÍDOS pelos do backup. Antes, o Acervo guarda uma cópia do catálogo atual em \"antes-de-restaurar.{}\", na pasta do catálogo.\n\nNo fim, o Acervo reabre sozinho.",
+                    backup::EXTENSION
+                ),
+            ) {
+                return;
+            }
+            ui.set_scanning(true);
+            ui.set_status("Restaurando o backup...".into());
+            let db_path = app.db_path.clone();
+            let progress_weak = weak.clone();
+            background(
+                &weak,
+                move || backup::restore(&db_path, &file, &|text| set_status_later(&progress_weak, text.to_string())),
+                |ui, result: Result<backup::Summary>| {
+                    ui.set_scanning(false);
+                    match result {
+                        Ok(summary) => {
+                            ui.set_status(
+                                format!(
+                                    "Backup restaurado: {} arquivos, {} fontes, {} miniaturas.",
+                                    thousands(summary.files),
+                                    summary.sources,
+                                    thousands(summary.thumbnails)
+                                )
+                                .into(),
+                            );
+                            rfd::MessageDialog::new()
+                                .set_title("Backup restaurado")
+                                .set_description("Pronto! O Acervo vai reabrir para aplicar as configurações restauradas.")
+                                .set_level(rfd::MessageLevel::Info)
+                                .set_buttons(rfd::MessageButtons::Ok)
+                                .show();
+                            if let Ok(exe) = std::env::current_exe() {
+                                let _ = Command::new(exe).spawn();
+                            }
+                            let _ = slint::quit_event_loop();
+                        }
+                        Err(error) => ui.set_status(format!("Erro ao restaurar: {error}").into()),
+                    }
+                },
+            );
+        }
+    });
+
+    ui.on_uninstall_app({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(uninstaller) = uninstaller.clone() else {
+                ui.set_status("O desinstalador só existe quando o Acervo foi instalado pelo instalador.".into());
+                return;
+            };
+            if !confirm(
+                "Desinstalar o Acervo",
+                "Desinstalar o Acervo deste computador?\n\nO programa, o serviço do Windows e os atalhos serão removidos. O catálogo continua guardado, a menos que você peça para apagá-lo na próxima janela.\n\nQuer guardar o catálogo antes de formatar? Cancele aqui e use \"Fazer backup\" nesta tela.".to_string(),
+            ) {
+                return;
+            }
+            let _ = Command::new(uninstaller).arg("--uninstall").spawn();
+            let _ = slint::quit_event_loop();
         }
     });
 
@@ -1102,13 +1286,18 @@ fn wire_vault(ui: &MainWindow, app: &Rc<App>) {
             }
             let mut settings = app.settings.borrow().clone();
             settings.vault_container = Some(file);
-            match Db::open(&app.db_path).and_then(|db| settings.save(&db)) {
-                Ok(()) => {
-                    show_settings(&ui, &settings);
-                    *app.settings.borrow_mut() = settings;
-                }
-                Err(error) => ui.set_vault_status(format!("Erro ao salvar: {error}").into()),
-            }
+            show_settings(&ui, &settings);
+            *app.settings.borrow_mut() = settings.clone();
+            let db_path = app.db_path.clone();
+            background(
+                &weak,
+                move || Db::open(&db_path).and_then(|db| settings.save(&db)),
+                |ui, result: Result<()>| {
+                    if let Err(error) = result {
+                        ui.set_vault_status(format!("Erro ao salvar: {error}").into());
+                    }
+                },
+            );
         }
     });
 
@@ -1191,6 +1380,13 @@ fn wire_vault(ui: &MainWindow, app: &Rc<App>) {
 // ---------------------------------------------------------------- Varredura
 
 fn add_and_scan(weak: &Weak<MainWindow>, app: &Rc<App>, path: &Path) {
+    // Com outra varredura gravando, cadastrar a fonte esperaria o banco liberar e a janela travaria.
+    if weak.upgrade().is_some_and(|ui| ui.get_scanning()) {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_status("Já há uma operação em andamento. Espere terminar para adicionar outra fonte.".into());
+        }
+        return;
+    }
     let name = path.to_string_lossy().into_owned();
     let db_path = app.db_path.clone();
     match Db::open(&db_path).and_then(|db| db.add_source(&name, &name)) {
@@ -1437,35 +1633,95 @@ fn background<T: Send + 'static>(
     });
 }
 
-fn refresh_sources(ui: &MainWindow, db_path: &Path) -> Result<()> {
-    let db = Db::open(db_path)?;
-    let sources = db.sources()?;
-    let mut names: Vec<slint::SharedString> = vec![ALL_SOURCES.into()];
-    names.extend(sources.iter().map(|source| slint::SharedString::from(source.name.as_str())));
-    ui.set_source_names(ModelRc::new(VecModel::from(names)));
+struct SourceData {
+    id: i64,
+    name: String,
+    info: String,
+    online: bool,
+}
 
-    let items: Vec<SourceItem> = sources
-        .into_iter()
-        .map(|source| SourceItem {
-            id: source.id as i32,
-            online: Path::new(&source.path).exists(),
-            info: describe_last_scan(source.last_scan).into(),
-            name: source.name.into(),
-            thumbs: "miniaturas: calculando...".into(),
-        })
-        .collect();
-    ui.set_sources(ModelRc::new(VecModel::from(items)));
+/// Atualiza a lista de fontes. Ler o banco e conferir se cada HD está conectado (o que pode
+/// demorar com HD dormindo ou unidade de rede) acontece em segundo plano: a janela não espera.
+fn refresh_sources(ui: &MainWindow, db_path: &Path) -> Result<()> {
+    let db_path = db_path.to_path_buf();
+    background(
+        &ui.as_weak(),
+        move || -> Result<Vec<SourceData>> {
+            let db = Db::open(&db_path)?;
+            Ok(db
+                .sources()?
+                .into_iter()
+                .map(|source| SourceData {
+                    id: source.id,
+                    online: Path::new(&source.path).exists(),
+                    info: describe_last_scan(source.last_scan),
+                    name: source.name,
+                })
+                .collect())
+        },
+        |ui, sources| {
+            let Ok(sources) = sources else { return };
+            let mut names: Vec<slint::SharedString> = vec![ALL_SOURCES.into()];
+            names.extend(sources.iter().map(|source| slint::SharedString::from(source.name.as_str())));
+            ui.set_source_names(ModelRc::new(VecModel::from(names)));
+
+            // Mantém o texto do espaço das miniaturas que já foi calculado para cada fonte.
+            let previous = ui.get_sources();
+            let thumbs_text = |id: i64| {
+                (0..previous.row_count())
+                    .filter_map(|index| previous.row_data(index))
+                    .find(|row| row.id as i64 == id)
+                    .map(|row| row.thumbs)
+                    .unwrap_or_else(|| "miniaturas: calculando...".into())
+            };
+            let items: Vec<SourceItem> = sources
+                .into_iter()
+                .map(|source| SourceItem {
+                    id: source.id as i32,
+                    online: source.online,
+                    thumbs: thumbs_text(source.id),
+                    info: source.info.into(),
+                    name: source.name.into(),
+                })
+                .collect();
+            ui.set_sources(ModelRc::new(VecModel::from(items)));
+        },
+    );
     Ok(())
 }
 
-/// Unidades A:..Z: que existem agora, para "Adicionar HD".
+/// Unidades A:..Z: que existem agora, para "Adicionar HD". Em segundo plano: uma unidade de
+/// cartão vazia ou de rede pode demorar para responder.
 fn refresh_drives(ui: &MainWindow) {
-    let drives: Vec<slint::SharedString> = ('A'..='Z')
-        .map(|letter| format!("{letter}:\\"))
-        .filter(|root| Path::new(root).exists())
-        .map(Into::into)
-        .collect();
-    ui.set_drives(ModelRc::new(VecModel::from(drives)));
+    background(
+        &ui.as_weak(),
+        || -> Vec<slint::SharedString> {
+            ('A'..='Z')
+                .map(|letter| format!("{letter}:\\"))
+                .filter(|root| Path::new(root).exists())
+                .map(Into::into)
+                .collect()
+        },
+        |ui, drives| ui.set_drives(ModelRc::new(VecModel::from(drives))),
+    );
+}
+
+/// Contar grupos de duplicados percorre o catálogo inteiro (segundos em milhões de arquivos).
+/// O número é guardado por 2 minutos, para as telas não repetirem essa conta a cada mudança.
+fn cached_duplicate_groups(db: &Db) -> Result<i64> {
+    static CACHE: Mutex<Option<(Instant, i64)>> = Mutex::new(None);
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((at, count)) = *cache {
+            if at.elapsed() < Duration::from_secs(120) {
+                return Ok(count);
+            }
+        }
+    }
+    let count = db.duplicate_group_count()?;
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((Instant::now(), count));
+    }
+    Ok(count)
 }
 
 struct StatsData {
@@ -1493,7 +1749,7 @@ fn refresh_stats(weak: &Weak<MainWindow>, db_path: &Path) {
                 bytes: totals.bytes,
                 offline: sources.iter().filter(|s| !Path::new(&s.path).exists()).count(),
                 sources: sources.len(),
-                duplicate_groups: db.duplicate_group_count()?,
+                duplicate_groups: cached_duplicate_groups(&db)?,
                 kinds: db.stats_by_kind()?,
                 thumbs: db.thumb_stats()?,
                 thumbs_by_source: db.thumb_usage_by_source()?,
@@ -1706,7 +1962,11 @@ fn load_games(weak: &Weak<MainWindow>, app: &Rc<App>, tab: i32) {
                 1 => Db::open(&db_path)?
                     .search_query(&SearchQuery {
                         kind: Some("installer".to_string()),
-                        limit: 1000,
+                        // A grade de cartões não é "virtual": milhares de cartões deixariam a tela
+                        // pesada. Os 300 primeiros aparecem; a busca por nome acha o resto.
+                        limit: 300,
+                        text: query.clone(),
+                        sort: if by_size { Sort::Largest } else { Sort::Name },
                         ..SearchQuery::default()
                     })?
                     .into_iter()
@@ -2075,6 +2335,17 @@ fn ext_label(name: &str) -> String {
     name.rsplit_once('.')
         .map(|(_, ext)| ext.chars().take(4).collect::<String>().to_uppercase())
         .unwrap_or_default()
+}
+
+/// Hoje como aaaa-mm-dd (para nome de arquivo).
+fn iso_date_today() -> String {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let text = date_text(Some(now)); // dd/mm/aaaa
+    let parts: Vec<&str> = text.split('/').collect();
+    match parts.as_slice() {
+        [day, month, year] => format!("{year}-{month}-{day}"),
+        _ => "backup".to_string(),
+    }
 }
 
 /// dd/mm/aaaa a partir de segundos Unix (algoritmo de dias civis, sem biblioteca de datas).

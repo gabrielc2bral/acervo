@@ -86,6 +86,12 @@ export component SetupWindow inherits Window {
                 wrap: word-wrap;
             }
             CheckBox { text: "Apagar também o catálogo e as miniaturas"; checked <=> root.remove-catalog; enabled: !root.busy; }
+            Text {
+                text: "Vai formatar o PC? Cancele e faça o backup antes, em Configurações dentro do Acervo.";
+                color: #fce100;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
         }
 
         if root.done : VerticalLayout {
