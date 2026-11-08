@@ -1,0 +1,127 @@
+import { Button, CheckBox, LineEdit, ProgressIndicator } from "std-widgets.slint";
+
+export component SetupWindow inherits Window {
+    title: uninstall-mode ? "Remover o Acervo" : "Instalar o Acervo";
+    icon: @image-url("../assets/acervo.svg");
+    preferred-width: 600px;
+    preferred-height: 470px;
+    min-width: 600px;
+    min-height: 470px;
+    background: #202020;
+
+    in property <string> version;
+    in property <bool> uninstall-mode;
+    in-out property <string> install-dir;
+    in-out property <bool> desktop-shortcut: true;
+    in-out property <bool> start-menu-shortcut: true;
+    in-out property <bool> remove-catalog: false;
+    in property <string> status;
+    in property <bool> busy;
+    in property <bool> done;
+    in property <bool> failed;
+
+    callback browse();
+    callback start();
+    callback open-app();
+    callback close-window();
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 14px;
+
+        HorizontalLayout {
+            spacing: 16px;
+            Image {
+                source: @image-url("../assets/acervo.svg");
+                width: 64px;
+                height: 64px;
+            }
+            VerticalLayout {
+                alignment: center;
+                Text { text: "Acervo"; color: #ffffff; font-size: 26px; font-weight: 700; }
+                Text {
+                    text: (root.uninstall-mode ? "Remover do computador" : "Catálogo rápido dos seus arquivos e HDs") + " · versão " + root.version;
+                    color: #9a9a9a;
+                    font-size: 13px;
+                }
+            }
+        }
+
+        if !root.done && !root.uninstall-mode : VerticalLayout {
+            spacing: 10px;
+            Text { text: "Pasta de instalação"; color: #c8c8c8; font-size: 13px; }
+            HorizontalLayout {
+                spacing: 8px;
+                LineEdit { text <=> root.install-dir; enabled: !root.busy; }
+                Button { text: "Escolher..."; enabled: !root.busy; clicked => { root.browse(); } }
+            }
+            CheckBox { text: "Criar atalho na Área de Trabalho"; checked <=> root.desktop-shortcut; enabled: !root.busy; }
+            CheckBox { text: "Criar atalho no Menu Iniciar"; checked <=> root.start-menu-shortcut; enabled: !root.busy; }
+            Rectangle {
+                height: 78px;
+                border-radius: 8px;
+                background: #2b2b2b;
+                border-width: 1px;
+                border-color: #3b3b3b;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 4px;
+                    Text { text: "Serviço do Windows (obrigatório)"; color: #60cdff; font-size: 13px; font-weight: 600; }
+                    Text {
+                        text: "Instalado junto: lê a tabela de arquivos do NTFS e acompanha o que é criado ou apagado, sem pedir permissão de administrador a cada uso. O Windows pede a permissão uma vez agora.";
+                        color: #c8c8c8;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        if !root.done && root.uninstall-mode : VerticalLayout {
+            spacing: 10px;
+            Text {
+                text: "O Acervo, o serviço do Windows e os atalhos serão removidos. O catálogo (seus arquivos catalogados e miniaturas) continua guardado, a menos que você marque a opção abaixo.";
+                color: #c8c8c8;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            CheckBox { text: "Apagar também o catálogo e as miniaturas"; checked <=> root.remove-catalog; enabled: !root.busy; }
+        }
+
+        if root.done : VerticalLayout {
+            spacing: 10px;
+            Text {
+                text: root.failed ? "Não foi possível concluir" : (root.uninstall-mode ? "Acervo removido" : "Acervo instalado");
+                color: root.failed ? #ff99a4 : #6ccb5f;
+                font-size: 20px;
+                font-weight: 700;
+            }
+        }
+
+        Text { text: root.status; color: root.failed ? #ff99a4 : #9a9a9a; font-size: 12px; wrap: word-wrap; }
+        if root.busy : ProgressIndicator { indeterminate: true; }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            if !root.done : Button {
+                text: root.uninstall-mode ? "Remover" : "Instalar";
+                primary: true;
+                enabled: !root.busy;
+                clicked => { root.start(); }
+            }
+            if root.done && !root.failed && !root.uninstall-mode : Button {
+                text: "Abrir o Acervo";
+                primary: true;
+                clicked => { root.open-app(); }
+            }
+            Button {
+                text: root.done ? "Fechar" : "Cancelar";
+                enabled: !root.busy;
+                clicked => { root.close-window(); }
+            }
+        }
+    }
+}

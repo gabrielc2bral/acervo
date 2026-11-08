@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="256" height="256" shape-rendering="crispEdges" role="img" aria-label="Acervo">
+  <!-- Pixel art 16x16 no estilo SNES: pilha de disquetes (amarelo, vermelho e azul). -->
+  <!-- fundo, com os cantos "mordidos" como num sprite -->
+  <path fill="#1B1F27" d="M1 0h14v1h1v14h-1v1h-14v-1h-1v-14h1z"/>
+  <!-- disquete amarelo (atrás) -->
+  <rect x="1" y="1" width="10" height="10" fill="#20202C"/>
+  <rect x="2" y="2" width="8" height="8" fill="#FFD84D"/>
+  <!-- disquete vermelho (meio) -->
+  <rect x="3" y="3" width="10" height="10" fill="#20202C"/>
+  <rect x="4" y="4" width="8" height="8" fill="#E24B4B"/>
+  <!-- disquete azul (frente) -->
+  <rect x="5" y="5" width="10" height="10" fill="#20202C"/>
+  <rect x="6" y="6" width="8" height="8" fill="#3B5BDB"/>
+  <rect x="6" y="6" width="8" height="1" fill="#5C7CFA"/>
+  <!-- janela de metal -->
+  <rect x="8" y="6" width="5" height="3" fill="#C0C4D4"/>
+  <rect x="11" y="7" width="1" height="2" fill="#7C8198"/>
+  <!-- etiqueta -->
+  <rect x="7" y="11" width="6" height="3" fill="#F4F4F8"/>
+  <rect x="8" y="12" width="4" height="1" fill="#B0B4C4"/>
+</svg>

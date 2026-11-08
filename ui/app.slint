@@ -1,0 +1,1112 @@
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ProgressIndicator, ScrollView, Slider, Switch } from "std-widgets.slint";
+
+export struct SourceItem {
+    id: int,
+    name: string,
+    info: string,
+    online: bool,
+    // Espaço que as miniaturas dessa fonte ocupam no banco.
+    thumbs: string,
+}
+
+export struct FileItem {
+    name: string,
+    path: string,
+    size: string,
+    kind: string,
+    source: string,
+    online: bool,
+    ext: string,
+    color: color,
+    date: string,
+    thumb: image,
+    has-thumb: bool,
+}
+
+export struct GameItem {
+    name: string,
+    info: string,
+    library: string,
+    color: color,
+    initials: string,
+    thumb: image,
+    has-thumb: bool,
+}
+
+export struct DupItem {
+    name: string,
+    size-bytes: string,
+    info: string,
+    color: color,
+    ext: string,
+    thumb: image,
+    has-thumb: bool,
+}
+
+export struct DupCopy {
+    id: int,
+    path: string,
+    info: string,
+    online: bool,
+    checked: bool,
+}
+
+export struct TypeStat {
+    label: string,
+    size: string,
+    count: string,
+    fraction: float,
+    color: color,
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: active ? #2d2d2d : transparent;
+
+    Rectangle {
+        x: 0px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 2px;
+        background: active ? #60cdff : transparent;
+    }
+
+    Text {
+        x: 16px;
+        text: label;
+        color: active ? #ffffff : #c8c8c8;
+        font-size: 14px;
+        font-weight: active ? 600 : 400;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component Card inherits Rectangle {
+    border-radius: 8px;
+    background: #2b2b2b;
+    border-width: 1px;
+    border-color: #3b3b3b;
+}
+
+component Row inherits Card {
+    height: 64px;
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    height: 32px;
+    width: chip-text.preferred-width + 28px;
+    border-radius: 16px;
+    background: active ? #60cdff : #2b2b2b;
+    border-width: active ? 0px : 1px;
+    border-color: #3b3b3b;
+
+    chip-text := Text {
+        text: label;
+        color: active ? #000000 : #c8c8c8;
+        font-size: 13px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component PageTitle inherits Text {
+    color: #ffffff;
+    font-size: 28px;
+    font-weight: 700;
+}
+
+component Hint inherits Text {
+    color: #9a9a9a;
+    font-size: 13px;
+    wrap: word-wrap;
+}
+
+component StatCard inherits Card {
+    in property <string> label;
+    in property <string> value;
+    height: 92px;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 6px;
+        alignment: center;
+        Text { text: label; color: #9a9a9a; font-size: 13px; }
+        Text { text: value; color: #ffffff; font-size: 26px; font-weight: 700; }
+    }
+}
+
+// Miniatura quando existe; senão um quadrado colorido com a extensão (ou iniciais).
+component ThumbBox inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-thumb;
+    in property <color> tint: #666666;
+    in property <string> label;
+    in property <bool> cover: false;
+
+    clip: true;
+    border-radius: 6px;
+    background: has-thumb ? #161616 : tint.with-alpha(0.25);
+
+    if root.has-thumb : Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: root.cover ? ImageFit.cover : ImageFit.contain;
+    }
+    if !root.has-thumb : Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: root.tint;
+        font-size: 13px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component KindChips inherits HorizontalLayout {
+    in-out property <string> kind: "";
+    in property <bool> extended: false;
+    callback changed();
+
+    height: 32px;
+    spacing: 8px;
+    alignment: start;
+
+    for chip in [
+        { label: "Tudo", kind: "" },
+        { label: "Vídeos", kind: "video" },
+        { label: "Fotos", kind: "photo" },
+        { label: "Músicas", kind: "music" },
+        { label: "Documentos", kind: "document" },
+        { label: "Programas", kind: "program" },
+        { label: "Instaladores", kind: "installer" },
+        { label: "Compactados", kind: "archive" },
+    ] : Chip {
+        label: chip.label;
+        active: root.kind == chip.kind;
+        clicked => {
+            root.kind = chip.kind;
+            root.changed();
+        }
+    }
+    if root.extended : Chip {
+        label: "Repacks";
+        active: root.kind == "repack";
+        clicked => { root.kind = "repack"; root.changed(); }
+    }
+    if root.extended : Chip {
+        label: "Steam";
+        active: root.kind == "steam";
+        clicked => { root.kind = "steam"; root.changed(); }
+    }
+}
+
+component FileRow inherits Card {
+    in property <FileItem> file;
+    in property <bool> selected;
+    callback clicked();
+    height: 60px;
+    background: selected ? #1f3a4d : #2b2b2b;
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 12px;
+        ThumbBox {
+            width: 40px;
+            source: file.thumb;
+            has-thumb: file.has-thumb;
+            tint: file.color;
+            label: file.ext;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text { text: file.name; color: #ffffff; font-size: 14px; font-weight: 600; overflow: elide; }
+            Text { text: file.path; color: #9a9a9a; font-size: 11px; overflow: elide; }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: 170px;
+            Text { text: file.size + " · " + file.kind; color: #c8c8c8; font-size: 12px; overflow: elide; }
+            Text { text: file.date + " · " + file.source; color: #9a9a9a; font-size: 11px; overflow: elide; }
+        }
+        Rectangle {
+            width: 8px;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: file.online ? #6ccb5f : #777777;
+            }
+        }
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Lista (uma linha por arquivo) ou miniaturas (grade).
+component FileList inherits Rectangle {
+    in property <[FileItem]> items;
+    in property <bool> grid;
+    in property <int> selected-index: -1;
+    callback clicked(int);
+
+    if !root.grid : ListView {
+        for file[index] in root.items : FileRow {
+            file: file;
+            selected: index == root.selected-index;
+            clicked => { root.clicked(index); }
+        }
+    }
+
+    if root.grid : ScrollView {
+        property <float> cols: Math.max(2, Math.floor(root.width / 190px));
+        property <length> gap: 12px;
+        property <length> tile-w: (root.width - (cols + 1) * gap - 12px) / cols;
+        property <length> tile-h: tile-w + 62px;
+
+        content-width: root.width - 12px;
+        content-height: Math.ceil(root.items.length / cols) * (tile-h + gap) + gap;
+
+        for file[index] in root.items : Card {
+            x: gap + Math.mod(index, cols) * (tile-w + gap);
+            y: gap + Math.floor(index / cols) * (tile-h + gap);
+            width: tile-w;
+            height: tile-h;
+            background: index == root.selected-index ? #1f3a4d : #2b2b2b;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                ThumbBox {
+                    height: tile-w - 16px;
+                    source: file.thumb;
+                    has-thumb: file.has-thumb;
+                    tint: file.color;
+                    label: file.ext;
+                    cover: true;
+                }
+                Text { text: file.name; color: #ffffff; font-size: 12px; font-weight: 600; overflow: elide; }
+                Text { text: file.size + " · " + file.kind; color: #9a9a9a; font-size: 11px; overflow: elide; }
+            }
+            TouchArea {
+                clicked => { root.clicked(index); }
+            }
+        }
+    }
+}
+
+// Cartões de jogo com capa.
+component GameGrid inherits ScrollView {
+    in property <[GameItem]> items;
+
+    property <float> cols: Math.max(2, Math.floor(root.width / 200px));
+    property <length> gap: 14px;
+    property <length> tile-w: (root.width - (cols + 1) * gap - 12px) / cols;
+    property <length> cover-h: tile-w * 1.4;
+    property <length> tile-h: cover-h + 78px;
+
+    content-width: root.width - 12px;
+    content-height: Math.ceil(root.items.length / cols) * (tile-h + gap) + gap;
+
+    for game[index] in root.items : Card {
+        x: gap + Math.mod(index, cols) * (tile-w + gap);
+        y: gap + Math.floor(index / cols) * (tile-h + gap);
+        width: tile-w;
+        height: tile-h;
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            ThumbBox {
+                height: cover-h - 8px;
+                source: game.thumb;
+                has-thumb: game.has-thumb;
+                tint: game.color;
+                label: game.initials;
+                cover: true;
+            }
+            Text { text: game.name; color: #ffffff; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: game.info; color: #c8c8c8; font-size: 11px; overflow: elide; }
+            Text { text: game.library; color: #9a9a9a; font-size: 10px; overflow: elide; }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Acervo";
+    icon: @image-url("../assets/acervo.svg");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 960px;
+    min-height: 600px;
+    background: #202020;
+
+    // Navegação e estado geral
+    in-out property <int> page: 0;
+    in property <string> status;
+    in property <bool> scanning;
+
+    // Início
+    in property <string> stat-files;
+    in property <string> stat-bytes;
+    in property <string> stat-offline;
+    in property <string> stat-dupes;
+    in property <string> stat-thumbs;
+    in property <[TypeStat]> type-stats;
+    in property <[SourceItem]> sources;
+
+    // Fontes
+    in property <[string]> drives;
+    in-out property <bool> show-drives: false;
+
+    // Biblioteca
+    in property <[FileItem]> results;
+    in property <string> library-count;
+    in property <int> library-page: 0;
+    in property <bool> library-has-next;
+    in property <[string]> source-names: ["Todas as fontes"];
+    in-out property <string> library-query;
+    in-out property <string> kind-filter: "";
+    in-out property <string> library-source: "Todas as fontes";
+    in-out property <string> library-size: "Qualquer tamanho";
+    in-out property <string> library-sort: "Nome";
+    in-out property <bool> library-online-only: false;
+    in-out property <bool> library-grid: false;
+    in property <FileItem> selected;
+    in property <int> selected-index: -1;
+
+    // Jogos
+    in-out property <int> games-tab: 0;
+    in property <[GameItem]> games;
+    in-out property <string> games-query;
+    in-out property <string> games-sort: "Nome";
+
+    // Duplicados
+    in property <[DupItem]> dupes;
+    in property <string> dupe-summary;
+    in property <int> dupe-selected: -1;
+    in property <[DupCopy]> dupe-copies;
+    in-out property <string> dupe-query;
+    in-out property <string> dupe-kind: "";
+    in-out property <string> dupe-min: "1 MB+";
+
+    // Cofre
+    in property <bool> vault-unlocked;
+    in property <bool> vault-busy;
+    in property <bool> vault-configured;
+    in property <string> vault-container;
+    in property <string> vault-status;
+    in property <[FileItem]> vault-results;
+    in property <string> vault-count;
+    in-out property <string> vault-query;
+    in-out property <string> vault-kind: "";
+    in-out property <string> vault-sort: "Nome";
+    in-out property <bool> vault-grid: false;
+
+    // Configurações
+    in property <bool> veracrypt-found;
+    in-out property <float> set-threads: 2;
+    in-out property <bool> set-skip-hidden: true;
+    in-out property <bool> set-auto-thumbs: true;
+    in property <string> app-version;
+    in-out property <string> set-admin-mode: "Perguntar a cada vez (permissão do Windows)";
+    in property <string> service-status: "Serviço do Windows: verificando...";
+    in-out property <float> set-autolock: 5;
+    in-out property <string> set-letter: "V";
+
+    // Sobe quando o catálogo muda sozinho (arquivo apagado/criado fora do app).
+    in property <int> catalog-version: 0;
+    changed catalog-version => { root.catalog-changed(root.page); }
+    callback catalog-changed(int);
+
+    callback page-changed(int);
+    callback add-folder();
+    callback add-drive(string);
+    callback scan-source(int);
+    callback remove-source(int);
+    callback cancel-scan();
+    callback search(string, string);
+    callback library-page-prev();
+    callback library-page-next();
+    callback generate-thumbs();
+    callback select-file(int);
+    callback reveal(string);
+    callback select-dupe(int);
+    callback toggle-copy(int, bool);
+    callback mark-all-but-one();
+    callback clear-marks();
+    callback delete-marked();
+    callback dupes-filter-changed();
+    callback games-tab-changed(int);
+    callback games-filter-changed();
+    callback vault-pick-container();
+    callback vault-unlock();
+    callback vault-lock();
+    callback vault-add-folder();
+    callback vault-search(string);
+    callback settings-changed();
+    callback install-service();
+    callback uninstall-service();
+
+    function go(target: int) {
+        root.page = target;
+        root.page-changed(target);
+    }
+
+    HorizontalLayout {
+        Rectangle {
+            width: 220px;
+            background: #1b1b1b;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 4px;
+                alignment: start;
+
+                Text {
+                    text: "Acervo";
+                    color: #ffffff;
+                    font-size: 20px;
+                    font-weight: 700;
+                    height: 48px;
+                    vertical-alignment: center;
+                }
+                NavItem { label: "Início"; active: root.page == 0; clicked => { root.go(0); } }
+                NavItem { label: "Biblioteca"; active: root.page == 1; clicked => { root.go(1); } }
+                NavItem { label: "Jogos"; active: root.page == 2; clicked => { root.go(2); } }
+                NavItem { label: "Fontes"; active: root.page == 3; clicked => { root.go(3); } }
+                NavItem { label: "Duplicados"; active: root.page == 4; clicked => { root.go(4); } }
+                NavItem { label: root.vault-unlocked ? "Cofre (aberto)" : "Cofre"; active: root.page == 5; clicked => { root.go(5); } }
+                Rectangle { height: 1px; background: #3b3b3b; }
+                NavItem { label: "Configurações"; active: root.page == 6; clicked => { root.go(6); } }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+
+            // ---------- Início ----------
+            if root.page == 0 : VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+
+                PageTitle { text: "Início"; }
+                Hint { text: root.status == "" ? "Resumo de tudo que você já catalogou" : root.status; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    StatCard { label: "Itens catalogados"; value: root.stat-files; horizontal-stretch: 1; }
+                    StatCard { label: "Espaço catalogado"; value: root.stat-bytes; horizontal-stretch: 1; }
+                    StatCard { label: "Fontes offline"; value: root.stat-offline; horizontal-stretch: 1; }
+                    StatCard { label: "Grupos de duplicados"; value: root.stat-dupes; horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 1;
+                    Card {
+                        horizontal-stretch: 3;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            Text { text: "Fontes"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                            ListView {
+                                for source in root.sources : Rectangle {
+                                    height: 44px;
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Rectangle {
+                                            width: 8px;
+                                            Rectangle {
+                                                width: 8px; height: 8px; border-radius: 4px;
+                                                background: source.online ? #6ccb5f : #777777;
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text { text: source.name; color: #ffffff; font-size: 14px; font-weight: 600; overflow: elide; }
+                                            Text { text: (source.online ? "online" : "offline") + " · " + source.info + " · " + source.thumbs; color: #9a9a9a; font-size: 11px; overflow: elide; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Card {
+                        horizontal-stretch: 2;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            Text { text: "Por tipo"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                            ListView {
+                                for stat in root.type-stats : Rectangle {
+                                    height: 52px;
+                                    VerticalLayout {
+                                        spacing: 4px;
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            Text { text: stat.label; color: #ffffff; font-size: 14px; horizontal-stretch: 1; }
+                                            Text { text: stat.size + " · " + stat.count; color: #c8c8c8; font-size: 12px; }
+                                        }
+                                        Rectangle {
+                                            height: 6px;
+                                            border-radius: 3px;
+                                            background: #444444;
+                                            Rectangle {
+                                                x: 0px;
+                                                width: parent.width * stat.fraction;
+                                                border-radius: 3px;
+                                                background: stat.color;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Hint { text: root.stat-thumbs; }
+                        }
+                    }
+                }
+            }
+
+            // ---------- Biblioteca ----------
+            if root.page == 1 : VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+
+                PageTitle { text: "Biblioteca"; }
+                LineEdit {
+                    height: 40px;
+                    placeholder-text: "Buscar por nome, mesmo com os HDs desconectados...";
+                    text <=> root.library-query;
+                    edited(text) => { root.search(text, root.kind-filter); }
+                }
+                KindChips {
+                    extended: true;
+                    kind <=> root.kind-filter;
+                    changed => { root.search(root.library-query, root.kind-filter); }
+                }
+                HorizontalLayout {
+                    height: 36px;
+                    spacing: 8px;
+                    ComboBox {
+                        width: 190px;
+                        model: root.source-names;
+                        current-value <=> root.library-source;
+                        selected(v) => { root.search(root.library-query, root.kind-filter); }
+                    }
+                    ComboBox {
+                        width: 160px;
+                        model: ["Qualquer tamanho", "10 MB+", "100 MB+", "1 GB+", "10 GB+"];
+                        current-value <=> root.library-size;
+                        selected(v) => { root.search(root.library-query, root.kind-filter); }
+                    }
+                    ComboBox {
+                        width: 150px;
+                        model: ["Nome", "Maiores", "Menores", "Mais recentes", "Mais antigos"];
+                        current-value <=> root.library-sort;
+                        selected(v) => { root.search(root.library-query, root.kind-filter); }
+                    }
+                    Switch {
+                        text: "Só online";
+                        checked <=> root.library-online-only;
+                        toggled => { root.search(root.library-query, root.kind-filter); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Chip { label: "Lista"; active: !root.library-grid; clicked => { root.library-grid = false; } }
+                    Chip { label: "Miniaturas"; active: root.library-grid; clicked => { root.library-grid = true; } }
+                }
+                HorizontalLayout {
+                    height: 36px;
+                    spacing: 8px;
+                    Hint { text: root.library-count; vertical-alignment: center; horizontal-stretch: 1; }
+                    Button { text: "‹ Anterior"; enabled: root.library-page > 0; clicked => { root.library-page-prev(); } }
+                    Text { text: "Página " + (root.library-page + 1); color: #c8c8c8; font-size: 13px; vertical-alignment: center; }
+                    Button { text: "Próxima ›"; enabled: root.library-has-next; clicked => { root.library-page-next(); } }
+                }
+                HorizontalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 1;
+                    FileList {
+                        horizontal-stretch: 1;
+                        items: root.results;
+                        grid: root.library-grid;
+                        selected-index: root.selected-index;
+                        clicked(index) => { root.select-file(index); }
+                    }
+                    Card {
+                        width: 300px;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Detalhes"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                            if root.selected-index < 0 : Hint { text: "Escolha um item da lista."; }
+                            if root.selected-index >= 0 : VerticalLayout {
+                                spacing: 8px;
+                                ThumbBox {
+                                    height: 170px;
+                                    source: root.selected.thumb;
+                                    has-thumb: root.selected.has-thumb;
+                                    tint: root.selected.color;
+                                    label: root.selected.ext;
+                                }
+                                Text { text: root.selected.name; color: #ffffff; font-size: 15px; font-weight: 600; wrap: word-wrap; }
+                                Hint { text: root.selected.kind + " · " + root.selected.size + " · " + root.selected.date; }
+                                Hint { text: "Fonte: " + root.selected.source; }
+                                Text {
+                                    text: root.selected.online ? "Online" : "Offline: plugue o HD para abrir";
+                                    color: root.selected.online ? #6ccb5f : #fce100;
+                                    font-size: 13px;
+                                }
+                                Hint { text: root.selected.path; }
+                                Button {
+                                    text: "Mostrar no Explorer";
+                                    enabled: root.selected.online;
+                                    clicked => { root.reveal(root.selected.path); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- Jogos ----------
+            if root.page == 2 : VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+
+                PageTitle { text: "Jogos"; }
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 8px;
+                    alignment: start;
+                    Chip { label: "Steam"; active: root.games-tab == 0; clicked => { root.games-tab = 0; root.games-tab-changed(0); } }
+                    Chip { label: "Instaladores"; active: root.games-tab == 1; clicked => { root.games-tab = 1; root.games-tab-changed(1); } }
+                    Chip { label: "Repacks"; active: root.games-tab == 2; clicked => { root.games-tab = 2; root.games-tab-changed(2); } }
+                }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "Buscar jogo pelo nome...";
+                        text <=> root.games-query;
+                        edited(text) => { root.games-filter-changed(); }
+                    }
+                    ComboBox {
+                        width: 150px;
+                        model: ["Nome", "Maiores"];
+                        current-value <=> root.games-sort;
+                        selected(v) => { root.games-filter-changed(); }
+                    }
+                }
+                Hint {
+                    text: root.games.length + " itens · " + (root.games-tab == 0
+                        ? "Jogos da Steam lidos dos arquivos dela (sem login), com a capa que a Steam já guardou. Bibliotecas em HD desconectado não aparecem."
+                        : root.games-tab == 1
+                        ? "Instaladores encontrados no catálogo (setup, install...)."
+                        : "Pastas de repack (FitGirl e outras) encontradas no catálogo.");
+                }
+                GameGrid {
+                    vertical-stretch: 1;
+                    items: root.games;
+                }
+            }
+
+            // ---------- Fontes ----------
+            if root.page == 3 : VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    PageTitle { text: "Fontes"; horizontal-stretch: 1; }
+                    Button { text: "Gerar miniaturas"; enabled: !root.scanning; clicked => { root.generate-thumbs(); } }
+                    Button { text: "+ Adicionar HD"; clicked => { root.show-drives = true; } }
+                    Button { text: "+ Adicionar pasta"; primary: true; clicked => { root.add-folder(); } }
+                }
+                Hint { text: root.status == "" ? "HDs e pastas que você escolheu analisar. Arquivos de sistema são ignorados." : root.status; }
+                if root.scanning : HorizontalLayout {
+                    spacing: 12px;
+                    ProgressIndicator { indeterminate: true; horizontal-stretch: 1; }
+                    Button { text: "Cancelar"; clicked => { root.cancel-scan(); } }
+                }
+                ListView {
+                    for source in root.sources : Row {
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+                            Rectangle {
+                                width: 8px;
+                                Rectangle {
+                                    width: 8px; height: 8px; border-radius: 4px;
+                                    background: source.online ? #6ccb5f : #777777;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text { text: source.name; color: #ffffff; font-size: 15px; font-weight: 600; overflow: elide; }
+                                Text { text: (source.online ? "online" : "offline") + " · " + source.info; color: #9a9a9a; font-size: 12px; overflow: elide; }
+                                Text { text: source.thumbs; color: #60cdff; font-size: 12px; overflow: elide; }
+                            }
+                            Button {
+                                text: "Varrer";
+                                enabled: source.online && !root.scanning;
+                                clicked => { root.scan-source(source.id); }
+                            }
+                            Button {
+                                text: "Remover";
+                                enabled: !root.scanning;
+                                clicked => { root.remove-source(source.id); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- Duplicados ----------
+            if root.page == 4 : VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+
+                PageTitle { text: "Duplicados"; }
+                Hint { text: "Mesmo nome e tamanho em lugares diferentes (arquivos da Steam e de repacks ficam de fora). Antes de apagar, o Acervo confere o conteúdo e manda para a Lixeira do Windows."; }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "Filtrar pelo nome...";
+                        text <=> root.dupe-query;
+                        edited(text) => { root.dupes-filter-changed(); }
+                    }
+                    ComboBox {
+                        width: 130px;
+                        model: ["1 MB+", "10 MB+", "100 MB+", "1 GB+", "10 GB+"];
+                        current-value <=> root.dupe-min;
+                        selected(v) => { root.dupes-filter-changed(); }
+                    }
+                }
+                KindChips {
+                    kind <=> root.dupe-kind;
+                    changed => { root.dupes-filter-changed(); }
+                }
+                Hint { text: root.dupe-summary; }
+                if root.status != "" : Text { text: root.status; color: #fce100; font-size: 13px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 1;
+
+                    ListView {
+                        width: 420px;
+                        for dupe[index] in root.dupes : Card {
+                            height: 72px;
+                            background: index == root.dupe-selected ? #1f3a4d : #2b2b2b;
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                ThumbBox {
+                                    width: 48px;
+                                    source: dupe.thumb;
+                                    has-thumb: dupe.has-thumb;
+                                    tint: dupe.color;
+                                    label: dupe.ext;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text { text: dupe.name; color: #ffffff; font-size: 14px; font-weight: 600; overflow: elide; }
+                                    Text { text: dupe.info; color: #fce100; font-size: 12px; overflow: elide; }
+                                }
+                            }
+                            TouchArea {
+                                clicked => { root.select-dupe(index); }
+                            }
+                        }
+                    }
+
+                    Card {
+                        horizontal-stretch: 1;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 10px;
+                            Text { text: "Cópias"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                            if root.dupe-selected < 0 : Hint { text: "Escolha um grupo na lista ao lado."; }
+                            if root.dupe-selected >= 0 : VerticalLayout {
+                                spacing: 10px;
+                                vertical-stretch: 1;
+                                HorizontalLayout {
+                                    height: 90px;
+                                    spacing: 14px;
+                                    ThumbBox {
+                                        width: 120px;
+                                        source: root.dupes[root.dupe-selected].thumb;
+                                        has-thumb: root.dupes[root.dupe-selected].has-thumb;
+                                        tint: root.dupes[root.dupe-selected].color;
+                                        label: root.dupes[root.dupe-selected].ext;
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text { text: root.dupes[root.dupe-selected].name; color: #ffffff; font-size: 15px; font-weight: 600; overflow: elide; }
+                                        Hint { text: "Marque as cópias que quer apagar. Uma precisa ficar sem marca, e o HD dela precisa estar conectado."; }
+                                    }
+                                }
+                                ListView {
+                                    for copy[index] in root.dupe-copies : Rectangle {
+                                        height: 64px;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            CheckBox {
+                                                checked: copy.checked;
+                                                enabled: copy.online;
+                                                toggled => { root.toggle-copy(index, self.checked); }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center;
+                                                horizontal-stretch: 1;
+                                                Text { text: copy.path; color: copy.checked ? #ff99a4 : #ffffff; font-size: 13px; overflow: elide; }
+                                                Text {
+                                                    text: (copy.online ? "online" : "offline") + " · " + copy.info;
+                                                    color: copy.online ? #9a9a9a : #fce100;
+                                                    font-size: 11px;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                            Button {
+                                                text: "Abrir pasta";
+                                                enabled: copy.online;
+                                                clicked => { root.reveal(copy.path); }
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 36px;
+                                    spacing: 8px;
+                                    alignment: end;
+                                    Button { text: "Marcar todas menos uma"; clicked => { root.mark-all-but-one(); } }
+                                    Button { text: "Limpar marcas"; clicked => { root.clear-marks(); } }
+                                    Button { text: "Apagar marcadas"; primary: true; clicked => { root.delete-marked(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- Cofre ----------
+            if root.page == 5 && !root.vault-unlocked : Rectangle {
+                Card {
+                    width: 440px;
+                    height: 380px;
+                    VerticalLayout {
+                        padding: 32px;
+                        spacing: 12px;
+                        alignment: center;
+                        Text { text: "Cofre bloqueado"; color: #ffffff; font-size: 24px; font-weight: 700; horizontal-alignment: center; }
+                        Hint { text: "Itens do Cofre não aparecem na busca nem nas outras telas. O catálogo dele fica dentro do seu volume VeraCrypt."; horizontal-alignment: center; }
+                        if !root.veracrypt-found : Text { text: "VeraCrypt não encontrado neste PC."; color: #ff99a4; font-size: 13px; horizontal-alignment: center; }
+                        if root.vault-configured : Hint { text: root.vault-container; horizontal-alignment: center; }
+                        if !root.vault-configured : Button {
+                            text: "Escolher volume VeraCrypt...";
+                            primary: true;
+                            clicked => { root.vault-pick-container(); }
+                        }
+                        if root.vault-configured : Button {
+                            text: root.vault-busy ? "Aguardando o VeraCrypt..." : "Desbloquear";
+                            primary: true;
+                            enabled: !root.vault-busy && root.veracrypt-found;
+                            clicked => { root.vault-unlock(); }
+                        }
+                        if root.vault-configured : Button {
+                            text: "Trocar volume...";
+                            enabled: !root.vault-busy;
+                            clicked => { root.vault-pick-container(); }
+                        }
+                        Hint { text: root.vault-status != "" ? root.vault-status : "A senha é digitada na janela do VeraCrypt. O Acervo nunca vê a senha."; horizontal-alignment: center; }
+                    }
+                }
+            }
+
+            if root.page == 5 && root.vault-unlocked : VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    PageTitle { text: "Cofre"; horizontal-stretch: 1; }
+                    Button { text: "+ Adicionar pasta ao Cofre"; enabled: !root.scanning; clicked => { root.vault-add-folder(); } }
+                    Button { text: "Bloquear agora"; primary: true; enabled: !root.scanning && !root.vault-busy; clicked => { root.vault-lock(); } }
+                }
+                Hint { text: root.status != "" ? root.status : "Catálogo e miniaturas dentro do volume VeraCrypt (fotos apenas). Bloqueia sozinho depois de um tempo parado."; }
+                if root.scanning : HorizontalLayout {
+                    spacing: 12px;
+                    ProgressIndicator { indeterminate: true; horizontal-stretch: 1; }
+                    Button { text: "Cancelar"; clicked => { root.cancel-scan(); } }
+                }
+                LineEdit {
+                    height: 40px;
+                    placeholder-text: "Buscar só dentro do Cofre...";
+                    text <=> root.vault-query;
+                    edited(text) => { root.vault-search(text); }
+                }
+                KindChips {
+                    kind <=> root.vault-kind;
+                    changed => { root.vault-search(root.vault-query); }
+                }
+                HorizontalLayout {
+                    height: 36px;
+                    spacing: 8px;
+                    ComboBox {
+                        width: 150px;
+                        model: ["Nome", "Maiores", "Menores", "Mais recentes", "Mais antigos"];
+                        current-value <=> root.vault-sort;
+                        selected(v) => { root.vault-search(root.vault-query); }
+                    }
+                    Hint { text: root.vault-count; vertical-alignment: center; horizontal-stretch: 1; }
+                    Chip { label: "Lista"; active: !root.vault-grid; clicked => { root.vault-grid = false; } }
+                    Chip { label: "Miniaturas"; active: root.vault-grid; clicked => { root.vault-grid = true; } }
+                }
+                FileList {
+                    vertical-stretch: 1;
+                    items: root.vault-results;
+                    grid: root.vault-grid;
+                }
+            }
+
+            // ---------- Configurações ----------
+            if root.page == 6 : ScrollView { VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                alignment: start;
+
+                PageTitle { text: "Configurações"; }
+                Card {
+                    height: 250px;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+                        Text { text: "Administrador (varredura rápida do NTFS)"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                        Hint { text: "A leitura direta da MFT e do diário USN do NTFS exige administrador. Escolha como o Acervo deve lidar com isso:"; }
+                        ComboBox {
+                            model: [
+                                "Perguntar a cada vez (permissão do Windows)",
+                                "Usar o serviço do Windows (sem perguntar)",
+                                "Nunca usar administrador",
+                            ];
+                            current-value <=> root.set-admin-mode;
+                            selected(v) => { root.settings-changed(); }
+                        }
+                        Text { text: root.service-status; color: #60cdff; font-size: 13px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button { text: "Instalar serviço"; primary: true; clicked => { root.install-service(); } }
+                            Button { text: "Remover serviço"; clicked => { root.uninstall-service(); } }
+                        }
+                    }
+                }
+                Card {
+                    height: 250px;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
+                        Text { text: "Desempenho e sistema"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                        Switch {
+                            text: "Gerar miniaturas sozinho depois de cada varredura";
+                            checked <=> root.set-auto-thumbs;
+                            toggled => { root.settings-changed(); }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Threads na varredura: " + Math.round(root.set-threads); color: #ffffff; font-size: 14px; width: 220px; vertical-alignment: center; }
+                            Slider {
+                                minimum: 1; maximum: 8;
+                                value <=> root.set-threads;
+                                released(v) => { root.settings-changed(); }
+                            }
+                        }
+                        Switch {
+                            text: "Ignorar arquivos ocultos e de sistema (Windows, Program Files, AppData...)";
+                            checked <=> root.set-skip-hidden;
+                            toggled => { root.settings-changed(); }
+                        }
+                        Hint { text: "Pastas do sistema operacional são sempre ignoradas."; }
+                    }
+                }
+                Card {
+                    height: 190px;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
+                        Text { text: "Cofre (VeraCrypt)"; color: #ffffff; font-size: 18px; font-weight: 600; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Bloquear após " + Math.round(root.set-autolock) + " min parado"; color: #ffffff; font-size: 14px; width: 220px; vertical-alignment: center; }
+                            Slider {
+                                minimum: 1; maximum: 30;
+                                value <=> root.set-autolock;
+                                released(v) => { root.settings-changed(); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Letra da unidade do Cofre"; color: #ffffff; font-size: 14px; width: 220px; vertical-alignment: center; }
+                            ComboBox {
+                                width: 100px;
+                                model: ["H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+                                current-value <=> root.set-letter;
+                                selected(v) => { root.settings-changed(); }
+                            }
+                        }
+                        Hint { text: root.vault-configured ? "Volume: " + root.vault-container : "Nenhum volume escolhido ainda (use a tela Cofre)."; }
+                    }
+                }
+                Hint { text: root.app-version; }
+            } }
+        }
+    }
+
+    // Escolha de HD
+    if root.show-drives : Rectangle {
+        background: #000000a0;
+        TouchArea { clicked => { root.show-drives = false; } }
+        Card {
+            width: 400px;
+            height: min(root.height - 80px, 120px + root.drives.length * 48px);
+            background: #2b2b2b;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 8px;
+                Text { text: "Adicionar HD"; color: #ffffff; font-size: 20px; font-weight: 700; }
+                Hint { text: "Escolha a unidade. O Acervo varre só o que você criou ou baixou."; }
+                for drive in root.drives : Button {
+                    text: drive;
+                    clicked => { root.show-drives = false; root.add-drive(drive); }
+                }
+                Button { text: "Cancelar"; clicked => { root.show-drives = false; } }
+            }
+        }
+    }
+}
