@@ -6,7 +6,7 @@ Catálogo de arquivos para quem guarda coisa demais em HD demais.
 
 Você aponta o Acervo para um HD ou uma pasta, ele lê nomes, tamanhos e datas e guarda tudo num banco SQLite local. Depois dá para buscar, filtrar e ver miniaturas mesmo com o HD na gaveta.
 
-Comecei por causa dos meus próprios HDs: jogos, instaladores, repacks, fotos, vídeos e livros espalhados em vários discos, e eu nunca lembrava onde estava cada coisa. É um programa de Windows, escrito em Rust, com interface em [Slint](https://slint.dev).
+Comecei por causa dos meus próprios HDs: jogos, instaladores, repacks, fotos, vídeos e livros espalhados em vários discos, e eu nunca lembrava onde estava cada coisa. É um programa para Windows (com uma versão experimental para Linux), escrito em Rust, com interface em [Slint](https://slint.dev).
 
 ## Instalar
 
@@ -15,6 +15,41 @@ Baixe o `Acervo-Setup-X.Y.Z.exe` na página de [Releases](../../releases) e exec
 O instalador não é assinado, então o SmartScreen pode avisar na primeira execução ("Mais informações" > "Executar assim mesmo"). Cada release traz o SHA-256 do instalador para conferir.
 
 Requisitos: Windows 10 ou 11, 64 bits. Para o Cofre, o [VeraCrypt](https://veracrypt.fr) instalado.
+
+### Linux (experimental)
+
+**AppImage (o mais simples).** Baixe o `Acervo-X.Y.Z-x86_64.AppImage` em [Releases](../../releases), dê permissão e abra. Não precisa instalar nem de sudo, e dá para guardar num pendrive:
+
+```
+chmod +x Acervo-*-x86_64.AppImage
+./Acervo-*-x86_64.AppImage
+```
+
+Se der erro de FUSE, instale o `libfuse2` (no Ubuntu 24.04: `sudo apt install libfuse2t64`), ou rode com `--appimage-extract-and-run`. Quem usa o [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) ganha o atalho no menu automaticamente.
+
+**Instalar pelo terminal.** Um comando só, sem sudo. Ele baixa o último release, confere o SHA-256, instala em `~/.local/share/acervo` e cria o atalho no menu de aplicativos:
+
+```
+curl -fsSL https://raw.githubusercontent.com/gabrielc2bral/acervo/main/scripts/install-linux.sh | sh
+```
+
+Funciona em qualquer distribuição x86_64 com glibc recente (Ubuntu 22.04 ou mais novo, Debian 12, Fedora, Arch, openSUSE, Mint, Pop!_OS...). Para atualizar, rode o mesmo comando de novo. Para remover:
+
+```
+curl -fsSL https://raw.githubusercontent.com/gabrielc2bral/acervo/main/scripts/install-linux.sh | sh -s -- --remover
+```
+
+Prefere fazer na mão? Baixe o `Acervo-X.Y.Z-linux-x86_64.tar.gz` em [Releases](../../releases), extraia e rode `./acervo` (janela) ou `./acervo-cli` (terminal). O catálogo fica em `~/.local/share/Acervo`.
+
+Se a janela não abrir por falta de biblioteca, instale as de interface da sua distro:
+
+| Distro | Comando |
+| --- | --- |
+| Ubuntu, Debian, Mint | `sudo apt install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libgl1` |
+| Fedora | `sudo dnf install fontconfig libxkbcommon libxkbcommon-x11 wayland-libs-client mesa-libGL` |
+| Arch, Manjaro | `sudo pacman -S fontconfig libxkbcommon libxkbcommon-x11 wayland mesa` |
+
+No Linux ele varre por pastas e acompanha as mudanças enquanto está aberto. Não existem o serviço, a leitura da MFT, o Cofre com VeraCrypt nem as miniaturas do Windows. A separação de jogos e repacks ainda pode errar, porque foi pensada para caminhos do Windows. Se algo quebrar, abra uma issue com a distro e a versão.
 
 ## O que ele faz
 
@@ -78,7 +113,7 @@ Para publicar uma versão: suba o número no `Cargo.toml`, escreva a seção no 
 
 ## Limites
 
-- Só Windows.
+- Feito para Windows. A versão para Linux é experimental e tem menos recursos (veja acima).
 - Busca só por nome, não pelo conteúdo dos arquivos.
 - A leitura da MFT, o diário USN e o serviço dependem de administrador e ainda foram pouco usados fora do meu PC. Se algo falhar, o programa cai para a varredura por pastas.
 - Miniaturas de vídeo dependem de o Windows saber abrir o formato; sem isso o arquivo fica com um quadrado com a extensão.

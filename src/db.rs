@@ -145,11 +145,19 @@ pub struct Totals {
 const MIN_DUPLICATE_SIZE: i64 = 1_048_576;
 
 impl Db {
-    /// Banco principal: `%APPDATA%\Acervo\acervo.db`.
+    /// Banco principal: `%APPDATA%\Acervo\acervo.db` no Windows e
+    /// `~/.local/share/Acervo/acervo.db` (ou `$XDG_DATA_HOME`) no Linux.
     pub fn default_path() -> Result<PathBuf> {
-        let appdata = std::env::var_os("APPDATA")
-            .ok_or_else(|| anyhow::anyhow!("variável APPDATA ausente"))?;
-        Ok(PathBuf::from(appdata).join("Acervo").join("acervo.db"))
+        let base = if cfg!(windows) {
+            std::env::var_os("APPDATA").map(PathBuf::from)
+        } else {
+            std::env::var_os("XDG_DATA_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
+        };
+        let base = base.ok_or_else(|| anyhow::anyhow!("não achei a pasta de dados do usuário (APPDATA ou HOME)"))?;
+        Ok(base.join("Acervo").join("acervo.db"))
     }
 
     pub fn open(path: &Path) -> Result<Db> {

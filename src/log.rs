@@ -9,6 +9,9 @@ use std::path::PathBuf;
 const MAX_BYTES: u64 = 1_000_000;
 
 pub fn path() -> PathBuf {
+    if !cfg!(windows) {
+        return std::env::temp_dir().join("Acervo").join("service.log"); // sem serviço no Linux
+    }
     let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     base.join("Acervo").join("service.log")
 }

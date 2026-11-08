@@ -101,7 +101,7 @@ jobs:
   linux:
     # Versão para Linux (sem o serviço do Windows nem o instalador): programa e linha de comando.
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
       VERSION: ${{ inputs.version }}
@@ -123,7 +123,34 @@ jobs:
           cp assets/acervo.svg "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.sha256.txt")
+      - name: Montar o AppImage
+        run: |
+          sudo apt-get install -y libfuse2
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          appdir=dist/Acervo.AppDir
+          mkdir -p "$appdir/usr/bin"
+          cp target/release/acervo target/release/acervo-cli "$appdir/usr/bin/"
+          cp assets/acervo-256.png "$appdir/acervo.png"
+          cat > "$appdir/acervo.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Acervo
+          Comment=Catálogo rápido dos seus arquivos e HDs
+          Exec=acervo
+          Icon=acervo
+          Terminal=false
+          Categories=Utility;FileTools;
+          DESKTOP
+          sed -i 's/^          //' "$appdir/acervo.desktop"
+          printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/acervo" "$@"\n' > "$appdir/AppRun"
+          chmod +x "$appdir/AppRun"
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$appdir" "dist/Acervo-$VERSION-x86_64.AppImage"
+          (cd dist && sha256sum "Acervo-$VERSION-x86_64.AppImage" > "Acervo-$VERSION-x86_64.AppImage.sha256.txt")
       - name: Anexar ao release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "v$VERSION" dist/Acervo-$VERSION-linux-x86_64.tar.gz dist/Acervo-$VERSION-linux-x86_64.sha256.txt
+        run: |
+          gh release upload "v$VERSION" \
+            dist/Acervo-$VERSION-linux-x86_64.tar.gz dist/Acervo-$VERSION-linux-x86_64.sha256.txt \
+            dist/Acervo-$VERSION-x86_64.AppImage dist/Acervo-$VERSION-x86_64.AppImage.sha256.txt

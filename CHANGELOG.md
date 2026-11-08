@@ -12,6 +12,16 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
 2. anote aqui o que mudou;
 3. gere o instalador (`scripts\build-release.ps1`) e marque a versão no git (`git tag vX.Y.Z`).
 
+## [1.2.3] - 2026-11-08
+
+### Novo
+- **AppImage para Linux** (`Acervo-X.Y.Z-x86_64.AppImage`): um arquivo só, roda em qualquer
+  distro x86_64 sem instalar. Também há o instalador `scripts/install-linux.sh` (sem sudo, confere o
+  SHA-256) e o README explica a instalação e as bibliotecas por distro.
+
+### Corrigido
+- No Linux o programa não abria: exigia a variável `APPDATA`. Agora usa `~/.local/share/Acervo`.
+
 ## [1.2.2] - 2026-11-08
 
 ### Corrigido

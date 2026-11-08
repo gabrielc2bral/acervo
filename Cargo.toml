@@ -1,6 +1,6 @@
 [package]
 name = "acervo"
-version = "1.2.2"
+version = "1.2.3"
 edition = "2021"
 description = "Catálogo rápido e leve de arquivos, HDs e jogos, feito para Windows"
 
