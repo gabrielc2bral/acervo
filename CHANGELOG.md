@@ -12,6 +12,12 @@ número próprio, `SCHEMA_VERSION` em `src/version.rs`, gravado dentro do banco.
 2. anote aqui o que mudou;
 3. gere o instalador (`scripts\build-release.ps1`) e marque a versão no git (`git tag vX.Y.Z`).
 
+## [1.2.2] - 2026-11-08
+
+### Corrigido
+- O ícone da bandeja fazia uma janela de console piscar na barra de tarefas a cada 5 segundos
+  (a consulta ao estado do serviço abria um console). Agora roda sem janela.
+
 ## [1.2.1] - 2026-11-07
 
 ### Corrigido

@@ -41,7 +41,15 @@ pub enum Installed {
 }
 
 pub fn installed_state() -> Installed {
-    let Ok(output) = std::process::Command::new("sc").args(["query", SERVICE_NAME]).output() else {
+    let mut command = std::process::Command::new("sc");
+    command.args(["query", SERVICE_NAME]);
+    // Sem isso, cada consulta (o ícone da bandeja faz uma a cada 5 s) pisca uma janela de console.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let Ok(output) = command.output() else {
         return Installed::No;
     };
     let text = String::from_utf8_lossy(&output.stdout).to_uppercase();
